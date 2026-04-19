@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def _activation(value):
+def _activation_simple(value):
     return 1 if value >= 0 else -1
 
 
@@ -16,7 +16,7 @@ class SimpleStepPerceptron:
     def fit(self, X, y):
         n_samples, n_features = X.shape
 
-        # initialize weights and bias to zero
+        # initialize weights and bias to randoms
         np.random.seed(self.seed)
         self.weights = np.random.random_sample(n_features)
         self.bias = np.random.random_sample(1)
@@ -27,14 +27,16 @@ class SimpleStepPerceptron:
                 prediction = self._predict_single(x_i)
                 error = y_i - prediction
 
+                # UPDATE WEIGHTS IF THERES AN ERROR
+                if prediction != y_i:  # only update when O^μ ≠ ζ^μ, not strictly necessary
+                    self.weights += 2 * self.learning_rate * y_i * x_i
+                    self.bias += 2 * self.learning_rate * y_i
 
-                self.weights += self.learning_rate * error * x_i
-                self.bias    += self.learning_rate * error
                 if error != 0:
                     errors+=1
-                print(f"Epoch {epoch + 1}: {errors} errors")
 
-                # stop early if no errors
+            print(f"Epoch {epoch + 1}: {errors} errors")
+            # stop early if no errors
             if errors == 0:
                     print(f"Converged at epoch: {epoch + 1}")
                     break
@@ -44,5 +46,5 @@ class SimpleStepPerceptron:
 
     def _predict_single(self, x):
         linear_output = np.dot(x, self.weights) + self.bias
-        return _activation(linear_output)
+        return _activation_simple(linear_output)
 
