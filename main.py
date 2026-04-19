@@ -61,12 +61,10 @@ def main():
         predictions = perceptron.predict(X_test)
 
 
-    # results
-    accuracy = np.mean(predictions == y_test)
-    correct = np.sum(predictions == y_test)
     total = len(y_test)
 
     if args.type == "linear":
+        # because we are doing floats exxact match is always off, add a level of tolerance to interpret a result as "correct"
         tolerance = 0.5
         matches = np.abs(predictions - y_test) < tolerance
         correct = np.sum(matches)
@@ -84,7 +82,6 @@ def main():
         print(f"MSE: {mse:.4f}")
 
     else:
-        # step perceptron - exact match is fine
         correct = np.sum(predictions == y_test)
         accuracy = correct / total
 
