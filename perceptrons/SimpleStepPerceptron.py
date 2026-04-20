@@ -18,24 +18,34 @@ class SimpleStepPerceptron:
 
         # initialize weights and bias to randoms
         np.random.seed(self.seed)
-        self.weights = np.random.random_sample(n_features)
-        self.bias = np.random.random_sample(1)
+        # self.weights = np.random.random_sample(n_features)
+        self.weights = np.random.random_sample(n_features) * 2 - 1 # entre -1 y 1
+        #self.bias = np.random.random_sample()
+        self.bias = np.random.random_sample() * 2 - 1
 
         for epoch in range(self.epochs):
+            # elegir patrones en orden aleatorio dentro de la epoca 
+            # apunte dice "elegir un patron al azar entre 1 y p"
+            indices = np.random.permutation(n_samples)
             errors = 0
-            for x_i, y_i in zip(X, y):
+            
+            for i in indices:
+                x_i = X[i]
+                y_i = y[i]
+            
                 prediction = self._predict_single(x_i)
                 error = y_i - prediction
-
+            
                 # UPDATE WEIGHTS IF THERES AN ERROR
                 if prediction != y_i:  # only update when O^μ ≠ ζ^μ, not strictly necessary
                     self.weights += 2 * self.learning_rate * y_i * x_i
                     self.bias += 2 * self.learning_rate * y_i
-
+                
                 if error != 0:
-                    errors+=1
-
+                    errors += 1
+            
             print(f"Epoch {epoch + 1}: {errors} errors")
+                    
             # stop early if no errors
             if errors == 0:
                     print(f"Converged at epoch: {epoch + 1}")

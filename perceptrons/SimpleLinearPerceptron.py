@@ -20,12 +20,17 @@ class SimpleLinearPerceptron:
 
         # initialize weights and bias to random values
         np.random.seed(self.seed)
-        self.weights = np.random.random_sample(n_features)
-        self.bias = np.random.random_sample()
-
+        self.weights = np.random.random_sample(n_features) * 2 - 1
+        self.bias = np.random.random_sample() * 2 - 1
+        
         for epoch in range(self.epochs):
+            indices = np.random.permutation(n_samples)
+            
+            for i in indices:
+                x_i = X[i]
+                y_i = y[i]
 
-            for x_i, y_i in zip(X, y):
+            # for x_i, y_i in zip(X, y):
                 prediction = self._predict_single(x_i)
                 error = y_i - prediction # y - output -> if != 0 theres an error..
                 # Because theta(h) = h, theta'(h) = 1 (linear), so the update is not affected

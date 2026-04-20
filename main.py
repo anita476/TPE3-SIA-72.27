@@ -82,15 +82,19 @@ def main():
         print(f"MSE: {mse:.4f}")
 
     else:
-        correct = np.sum(predictions == y_test)
-        accuracy = correct / total
+        if total == 0:
+            print("Warning: test set is empty (dataset too small for the given --test_per).")
+            print("Consider using --no_split or increasing --test_per.")
+        else:
+            correct = np.sum(predictions == y_test)
+            accuracy = correct / total
 
-        print(f"\nResults on test set ({total} samples):")
-        for i, (pred, expected) in enumerate(zip(predictions, y_test)):
-            match = "✓" if pred == expected else "✗"
-            print(f"  sample {i + 1}: predicted={int(pred)}  expected={int(expected)}  {match}")
+            print(f"\nResults on test set ({total} samples):")
+            for i, (pred, expected) in enumerate(zip(predictions, y_test)):
+                match = "✓" if pred == expected else "✗"
+                print(f"  sample {i + 1}: predicted={int(pred)}  expected={int(expected)}  {match}")
 
-        print(f"\nAccuracy: {correct}/{total} = {accuracy * 100:.1f}%")
+            print(f"\nAccuracy: {correct}/{total} = {accuracy * 100:.1f}%")
 
 
 

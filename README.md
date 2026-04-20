@@ -47,7 +47,7 @@ python main.py --data <path_to_csv> --type <perceptron_type> [options]
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
 | `--data` | str | ✓ | — | Path to CSV file |
-| `--type` | str | ✓ | — | Perceptron type: `simple-step`, `simple-linear`, `simple-nonlinear`, `multilayer` |
+| `--type` | str | ✓ | — | Perceptron type: `simple-step`, `linear`, `simple-nonlinear`, `multilayer` |
 | `--lr` | float | | `0.01` | Learning rate |
 | `--epochs` | int | | `100` | Max number of training epochs |
 | `--test_per` | float | | `0.2` | Fraction of data for test split (e.g. `0.2` = 20%) |
