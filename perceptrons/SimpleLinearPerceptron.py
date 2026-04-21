@@ -1,8 +1,8 @@
 import numpy as np
 
+
 def _activation_identity(value):
     return (value)
-
 
 
 class SimpleLinearPerceptron:

@@ -6,11 +6,13 @@ from perceptrons.SimpleLinearPerceptron import SimpleLinearPerceptron
 from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
 from utils.test_data_split import test_data_split
 
+
 def build_perceptron(type, lr, epochs, epsilon,seed):
     if type == "simple-step":
         return SimpleStepPerceptron(lr, epochs, seed)
     elif type == "linear":
         return SimpleLinearPerceptron(lr,epochs,epsilon,seed)
+
 
 def parse_arguments()-> argparse.Namespace:
     arguments = argparse.ArgumentParser(
@@ -27,6 +29,7 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--seed", type=int,default=42, help="Random seed")
     arguments.add_argument("--no_split", action="store_true", help="Skip train/test split, evaluate on full dataset")
     return arguments.parse_args()
+
 
 def load_data(path: str):
     df = pd.read_csv(path)
@@ -95,7 +98,6 @@ def main():
                 print(f"  sample {i + 1}: predicted={int(pred)}  expected={int(expected)}  {match}")
 
             print(f"\nAccuracy: {correct}/{total} = {accuracy * 100:.1f}%")
-
 
 
 if __name__ == "__main__":
