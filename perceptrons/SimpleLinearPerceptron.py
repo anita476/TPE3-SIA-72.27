@@ -1,27 +1,22 @@
 import numpy as np
-
+from perceptrons.Perceptron import Perceptron
 
 def _activation_identity(value):
     return (value)
 
 
-class SimpleLinearPerceptron:
-    def __init__(self, learning_rate, epochs, epsilon,seed):
-        self.learning_rate = learning_rate
-        self.epochs = epochs
+
+class SimpleLinearPerceptron(Perceptron):
+    def __init__(self, learning_rate, epochs, epsilon, seed):
+        super().__init__(learning_rate, epochs, seed)
         self.epsilon = epsilon
-        self.seed = seed
-        self.weights = None
-        self.bias = None
 
 
     def fit(self, X, y):
         n_samples, n_features = X.shape
 
         # initialize weights and bias to random values
-        np.random.seed(self.seed)
-        self.weights = np.random.random_sample(n_features) * 2 - 1
-        self.bias = np.random.random_sample() * 2 - 1
+        self._initialize_parameters(n_features)
         
         for epoch in range(self.epochs):
             indices = np.random.permutation(n_samples)
@@ -30,7 +25,6 @@ class SimpleLinearPerceptron:
                 x_i = X[i]
                 y_i = y[i]
 
-            # for x_i, y_i in zip(X, y):
                 prediction = self._predict_single(x_i)
                 error = y_i - prediction # y - output -> if != 0 theres an error..
                 # Because theta(h) = h, theta'(h) = 1 (linear), so the update is not affected
@@ -44,20 +38,9 @@ class SimpleLinearPerceptron:
                 break
 
 
-    def predict(self, X):
-        return np.array([self._predict_single(x) for x in X])
-
     def _total_error(self,X, y):
         predictions = self.predict(X)
         return np.sum((y - predictions) ** 2)
 
-    def _predict_single(self, x):
-        # calculate the weighted sum....
-        linear_output = np.dot(x, self.weights) + self.bias
-        # compute activation...
-        return _activation_identity(linear_output)
-
-
-
-
-
+    def _activation(self, value):
+        return _activation_identity(value)

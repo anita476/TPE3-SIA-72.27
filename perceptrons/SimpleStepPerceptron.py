@@ -1,27 +1,21 @@
 import numpy as np
 
+from perceptrons.Perceptron import Perceptron
+
 
 def _activation_simple(value):
     return 1 if value >= 0 else -1
 
 
-class SimpleStepPerceptron:
-    def __init__(self, learning_rate, epochs,seed):
-        self.learning_rate = learning_rate
-        self.epochs = epochs
-        self.seed = seed
-        self.weights = None
-        self.bias = None
+class SimpleStepPerceptron(Perceptron):
+    def __init__(self, learning_rate, epochs, seed):
+        super().__init__(learning_rate, epochs, seed)
 
     def fit(self, X, y):
         n_samples, n_features = X.shape
 
         # initialize weights and bias to randoms
-        np.random.seed(self.seed)
-        # self.weights = np.random.random_sample(n_features)
-        self.weights = np.random.random_sample(n_features) * 2 - 1 # entre -1 y 1
-        #self.bias = np.random.random_sample()
-        self.bias = np.random.random_sample() * 2 - 1
+        self._initialize_parameters(n_features)
 
         for epoch in range(self.epochs):
             # elegir patrones en orden aleatorio dentro de la epoca 
@@ -51,10 +45,5 @@ class SimpleStepPerceptron:
                     print(f"Converged at epoch: {epoch + 1}")
                     break
 
-    def predict(self, X):
-        return np.array([self._predict_single(x) for x in X])
-
-    def _predict_single(self, x):
-        linear_output = np.dot(x, self.weights) + self.bias
-        return _activation_simple(linear_output)
-
+    def _activation(self, value):
+        return _activation_simple(value)
