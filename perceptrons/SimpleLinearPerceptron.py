@@ -19,8 +19,7 @@ class SimpleLinearPerceptron(Perceptron):
         self._initialize_parameters(n_features)
         
         for epoch in range(self.epochs):
-            indices = np.random.permutation(n_samples)
-            
+            indices = self.rng.permutation(n_samples)
             for i in indices:
                 x_i = X[i]
                 y_i = y[i]

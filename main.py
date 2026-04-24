@@ -15,6 +15,7 @@ def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.
         return SimpleLinearPerceptron(lr, epochs, epsilon, seed)
     elif type == "non-linear":
         return SimpleNonLinearPerceptron(lr, epochs, epsilon, seed, activation, beta)
+    raise Exception("Unknown perceptron type")
 
 
 def parse_arguments()-> argparse.Namespace:
@@ -69,22 +70,25 @@ def main():
 
     if args.type_p == "linear" or args.type_p == "non-linear":
         # because we are doing floats exact match is always off, add a level of tolerance to interpret a result as "correct"
-        tolerance = args.tolerance
-        matches = np.abs(predictions - y_test) < tolerance
-        correct = np.sum(matches)
-        accuracy = correct / total
-        mae = np.mean(np.abs(predictions - y_test))
-        mse = np.mean((predictions - y_test) ** 2)
+        if total == 0:
+            print("Warning: test set is empty (dataset too small for the given --test_per).")
+            print("Consider using --no_split or increasing --test_per.")
+        else:
+            tolerance = args.tolerance
+            matches = np.abs(predictions - y_test) < tolerance
+            correct = np.sum(matches)
+            accuracy = correct / total
+            mae = np.mean(np.abs(predictions - y_test))
+            mse = np.mean((predictions - y_test) ** 2)
 
-        print(f"\nResults on test set ({total} samples):")
-        for i, (pred, expected) in enumerate(zip(predictions, y_test)):
-            match = "✓" if abs(pred - expected) < tolerance else "✗"
-            print(f"  sample {i + 1}: predicted={pred:.2f}  expected={expected}  {match}")
+            print(f"\nResults on test set ({total} samples):")
+            for i, (pred, expected) in enumerate(zip(predictions, y_test)):
+                match = "✓" if abs(pred - expected) < tolerance else "✗"
+                print(f"  sample {i + 1}: predicted={pred:.2f}  expected={expected}  {match}")
 
-        print(f"\nAccuracy (tolerance={tolerance}): {correct}/{total} = {accuracy * 100:.1f}%")
-        print(f"MAE: {mae:.4f}")
-        print(f"MSE: {mse:.4f}")
-
+            print(f"\nAccuracy (tolerance={tolerance}): {correct}/{total} = {accuracy * 100:.1f}%")
+            print(f"MAE: {mae:.4f}")
+            print(f"MSE: {mse:.4f}")
     else:
         if total == 0:
             print("Warning: test set is empty (dataset too small for the given --test_per).")

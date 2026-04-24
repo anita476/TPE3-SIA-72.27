@@ -2,11 +2,9 @@ import numpy as np
 
 
 def test_data_split(X, y, test_size=0.2, random_state=None):
-    if random_state is not None:
-        np.random.seed(random_state)
-
+    rng = np.random.default_rng(random_state)
     n_samples = len(X)
-    indices = np.random.permutation(n_samples)  # shuffle indices
+    indices = rng.permutation(n_samples)  # shuffle indices
 
     n_test = int(n_samples * test_size)
 

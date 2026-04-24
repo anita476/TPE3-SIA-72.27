@@ -20,7 +20,7 @@ class SimpleStepPerceptron(Perceptron):
         for epoch in range(self.epochs):
             # elegir patrones en orden aleatorio dentro de la epoca 
             # apunte dice "elegir un patron al azar entre 1 y p"
-            indices = np.random.permutation(n_samples)
+            indices = self.rng.permutation(n_samples)
             errors = 0
             
             for i in indices:
