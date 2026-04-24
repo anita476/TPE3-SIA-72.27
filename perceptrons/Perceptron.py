@@ -10,8 +10,8 @@ class Perceptron:
         self.bias = None
 
     def _initialize_parameters(self, n_features):
-        self.weights = self.rng.random(n_features) * 2 - 1
-        self.bias = self.rng.random() * 2 - 1
+        self.weights = self.rng.uniform(-1, 1, n_features)
+        self.bias = self.rng.uniform(-1, 1)
 
     def _linear_output(self, x):
         return np.dot(x, self.weights) + self.bias
