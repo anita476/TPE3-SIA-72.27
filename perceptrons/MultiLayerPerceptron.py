@@ -1,6 +1,5 @@
 import numpy as np
 
-
 def _tanh(h, beta=1.0):
     return np.tanh(beta * h)
 
@@ -8,12 +7,26 @@ def _tanh(h, beta=1.0):
 def _tanh_derivative(h, beta=1.0):
     return beta * (1 - np.tanh(beta * h)**2)
 
+def _logistic(h, beta=1.0):
+    return 1.0 / (1.0 + np.exp(-2 * beta * h))
+
+def _logistic_derivative(h, beta=1.0):
+    g_h = _logistic(h, beta)
+    return 2 * beta * g_h * (1 - g_h)
+
+ACTIVATIONS = {
+    "tanh": (_tanh, _tanh_derivative),
+    "logistic": (_logistic, _logistic_derivative),
+}
+
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh"):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
+        if activation not in ACTIVATIONS:
+            activation = "tanh"
 
         # layers=[2, 2, 1] => 2 inputs, 2 hidden neurons, 1 output.
         self.layers = list(layers)
@@ -21,6 +34,8 @@ class MultiLayerPerceptron:
         self.epochs = epochs
         self.epsilon = epsilon
         self.beta = beta
+        self.activation = activation
+        self.g, self.g_prime = ACTIVATIONS[activation]
         self.rng = np.random.default_rng(seed)
 
         # One weight matrix per connection between consecutive layers.
@@ -40,7 +55,7 @@ class MultiLayerPerceptron:
         """Run one sample through the network and keep intermediate values."""
         # input layer => later entries are layer last after first iteration.
         activations = [np.asarray(x, dtype=float)]
-        # neuron values before applying tanh.
+        # neuron values before applying the activation function.
         pre_activations = []
 
         for W, b in zip(self.weights, self.biases):
@@ -50,8 +65,8 @@ class MultiLayerPerceptron:
             h = W @ activations[-1] + b
             pre_activations.append(h)
 
-            # apply tanh activation and send it to the next layer.
-            activations.append(_tanh(h, self.beta))
+            # apply activation and send it to the next layer.
+            activations.append(self.g(h, self.beta))
 
         return activations, pre_activations
 
@@ -70,7 +85,7 @@ class MultiLayerPerceptron:
         # (-1)(ζᵢ − Oᵢ) = (activations[-1] - y_true)
         # θ'(hᵢ) = _tanh_derivative(...)
         # pre_activations[-1] = h^M
-        delta = (activations[-1]-y_true) * _tanh_derivative(pre_activations[-1], self.beta)
+        delta = (activations[-1]-y_true) * self.g_prime(pre_activations[-1], self.beta)
         # Weight gradient for a layer is delta outer-product previous activation.
         # δᵢ​⋅Vⱼ^(M-1)
         # Vⱼ^(M-1) = activations[-2]
@@ -79,14 +94,14 @@ class MultiLayerPerceptron:
 
         # hidden layers (from last one to first)
         for l in range(L_weights - 2, -1, -1):
-            # Move the next layer's error backward, then scale by tanh slope here.
+            # Move the next layer's error backward, then scale by activation slope here.
             # Delta is from the layer on top
             # θ'(hⱼ^(l)) evaluated in pre-activación from this layer = pre_activations[l]
             # ∑ᵢ​δᵢ​Wᵢⱼ = self.weights[l + 1].T @ delta
             # θ'(hᵢ^m) = _tanh_derivative(pre_activations[l], self.beta)
             # Vⱼ^(m-1) = activations[l]
             # δᵢ^m​⋅Vⱼ^(m-1)
-            delta = (self.weights[l + 1].T @ delta) * _tanh_derivative(pre_activations[l], self.beta)
+            delta = (self.weights[l + 1].T @ delta) * self.g_prime(pre_activations[l], self.beta)
             dW[l] = np.outer(delta, activations[l])
             db[l] = delta
 
