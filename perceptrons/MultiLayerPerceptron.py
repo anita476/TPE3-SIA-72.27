@@ -1,4 +1,5 @@
 import numpy as np
+from perceptrons.initializers import build_initializer
 
 
 def _tanh(h, beta=1.0):
@@ -11,7 +12,8 @@ def _tanh_derivative(h, beta=1.0):
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0,
+                 initializer="random"):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
 
@@ -23,16 +25,18 @@ class MultiLayerPerceptron:
         self.beta = beta
         self.rng = np.random.default_rng(seed)
 
+        init = build_initializer(initializer)
+
         # One weight matrix per connection between consecutive layers.
         # Matrix shape: (current_layer_size, previous_layer_size).
         self.weights = [
-            self.rng.uniform(-1, 1, (self.layers[l], self.layers[l - 1]))
+            init.init_weights(self.layers[l - 1], self.layers[l], self.rng)
             for l in range(1, len(self.layers))
         ]
 
-        # One bias vector per layer, it creates bias for every layer (except the input one, it makes the biases where they are making effect(layer 0 bias modifies layer 1)).
+        # One bias vector per layer (input layer has no bias).
         self.biases = [
-            self.rng.uniform(-1, 1, self.layers[l])
+            init.init_biases(self.layers[l], self.rng)
             for l in range(1, len(self.layers))
         ]
 
@@ -45,7 +49,7 @@ class MultiLayerPerceptron:
 
         for W, b in zip(self.weights, self.biases):
             # Weighted sum for the current layer: h= W*a_previous +b.
-            # should work exactly as using the auggmented matrix for the calculation  
+            # should work exactly as using the auggmented matrix for the calculation
             # @ = dot product
             h = W @ activations[-1] + b
             pre_activations.append(h)
@@ -92,26 +96,20 @@ class MultiLayerPerceptron:
 
         return dW, db
 
-    def _update(self, dW, db):
-        for l in range(len(self.weights)):
-            self.weights[l] -= self.learning_rate * dW[l]
-            self.biases[l] -= self.learning_rate * db[l]
-
-    def fit(self, X, y, X_val=None, y_val=None):
+    def fit(self, X, y, X_val=None, y_val=None, val_labels=None, name=""):
         n_samples = X.shape[0]
         self.errors_ = []
         self.val_errors_ = []
-
+        self.val_accuracies_ = []
         for epoch in range(self.epochs):
             indices = self.rng.permutation(n_samples)
 
             for i in indices:
-                # Forward pass.
                 activations, pre_acts = self._forward(X[i])
-                # Backward pass.
                 dW, db = self._backward(activations, pre_acts, y[i])
-                # Apply gradients
-                self._update(dW, db)
+                for W, dw, b, d in zip(self.weights, dW, self.biases, db):
+                    W -= self.learning_rate * dw
+                    b -= self.learning_rate * d
 
             total_error = self._total_error(X, y)
             self.errors_.append(total_error)
@@ -119,12 +117,17 @@ class MultiLayerPerceptron:
             if X_val is not None and y_val is not None:
                 val_error = self._total_error(X_val, y_val)
                 self.val_errors_.append(val_error)
-                print(f"Epoch {epoch + 1}: train error = {total_error:.4f}  test error = {val_error:.4f}")
+
+                if val_labels is not None:
+                    val_preds = np.argmax(self.predict(X_val), axis=1)
+                    self.val_accuracies_.append(np.mean(val_preds == val_labels))
+
+                print(f"[{name}] Epoch {epoch + 1}: train error = {total_error:.4f}  test error = {val_error:.4f}")
             else:
-                print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
+                print(f"[{name}] Epoch {epoch + 1}: total error = {total_error:.4f}")
 
             if total_error < self.epsilon:
-                print(f"Converged at epoch {epoch + 1}")
+                print(f"[{name}] Converged at epoch {epoch + 1}")
                 break
 
     def predict(self, X):
