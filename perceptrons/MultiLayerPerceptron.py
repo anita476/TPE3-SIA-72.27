@@ -97,8 +97,10 @@ class MultiLayerPerceptron:
             self.weights[l] -= self.learning_rate * dW[l]
             self.biases[l] -= self.learning_rate * db[l]
 
-    def fit(self, X, y):
+    def fit(self, X, y, X_val=None, y_val=None):
         n_samples = X.shape[0]
+        self.errors_ = []
+        self.val_errors_ = []
 
         for epoch in range(self.epochs):
             indices = self.rng.permutation(n_samples)
@@ -112,7 +114,14 @@ class MultiLayerPerceptron:
                 self._update(dW, db)
 
             total_error = self._total_error(X, y)
-            print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
+            self.errors_.append(total_error)
+
+            if X_val is not None and y_val is not None:
+                val_error = self._total_error(X_val, y_val)
+                self.val_errors_.append(val_error)
+                print(f"Epoch {epoch + 1}: train error = {total_error:.4f}  val error = {val_error:.4f}")
+            else:
+                print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
 
             if total_error < self.epsilon:
                 print(f"Converged at epoch {epoch + 1}")
@@ -127,4 +136,4 @@ class MultiLayerPerceptron:
 
     def _total_error(self, X, y):
         predictions = self.predict(X)
-        return 0.5*np.sum((y - predictions) ** 2)
+        return 0.5 * np.sum((y - predictions) ** 2)
