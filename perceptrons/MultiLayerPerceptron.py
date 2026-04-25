@@ -119,7 +119,7 @@ class MultiLayerPerceptron:
             if X_val is not None and y_val is not None:
                 val_error = self._total_error(X_val, y_val)
                 self.val_errors_.append(val_error)
-                print(f"Epoch {epoch + 1}: train error = {total_error:.4f}  val error = {val_error:.4f}")
+                print(f"Epoch {epoch + 1}: train error = {total_error:.4f}  test error = {val_error:.4f}")
             else:
                 print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
 

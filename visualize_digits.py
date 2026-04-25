@@ -36,7 +36,7 @@ def plot_loss_curve(train_errors, n_train, val_errors=None, n_val=None):
         plt.plot(epochs, [e / n_val for e in val_errors], label="Test")
         plt.legend()
     plt.xlabel("Epoch")
-    plt.ylabel("Error (MSE)")
+    plt.ylabel("Error")
     plt.title("Loss curve")
     plt.tight_layout()
     plt.savefig("plots/plot_loss_curve.png")
