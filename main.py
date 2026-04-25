@@ -2,19 +2,22 @@ import argparse
 import numpy as np
 import pandas as pd
 
+from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from perceptrons.SimpleLinearPerceptron import SimpleLinearPerceptron
 from perceptrons.SimpleNonLinearPerceptron import SimpleNonLinearPerceptron
 from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
 from utils.test_data_split import test_data_split
 
 
-def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0):
+def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None):
     if type == "simple-step":
         return SimpleStepPerceptron(lr, epochs, seed)
     elif type == "linear":
         return SimpleLinearPerceptron(lr, epochs, epsilon, seed)
     elif type == "non-linear":
         return SimpleNonLinearPerceptron(lr, epochs, epsilon, seed, activation, beta)
+    elif type == "multilayer":
+        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta)
     raise Exception("Unknown perceptron type")
 
 
@@ -25,7 +28,7 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--lr", type=float, default=0.01, help="Perceptron learning rate")
     arguments.add_argument("--epochs", type=int, default=100, help= "Number of epochs")
     arguments.add_argument("--data", type=str, required=True, help="Path to CSV file. Required")
-    arguments.add_argument("--type_p", type=str, required=True, choices=["simple-step", "linear", "non-linear"], help="Perceptron type to use")
+    arguments.add_argument("--type_p", type=str, required=True, choices=["simple-step", "linear", "non-linear", "multilayer"], help="Perceptron type to use")
     arguments.add_argument("--epsilon", type=float, default=0.001, help="Perceptron epsilon value (threshold). Default is 0.001")
     arguments.add_argument("--tolerance", type=float, default=0.5, help="Tolerance for interpreting predictions as correct (for linear and non-linear perceptrons). Default is 0.5")
     arguments.add_argument("--test_per", type=float, default=0.2, help="Fraction for test split in decimals (for example 0.2 = 20%%)")
@@ -33,6 +36,7 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--activation", type=str, default="tanh", choices=["tanh", "logistic"], help="Activation function for non-linear perceptron. Default is tanh")
     arguments.add_argument("--beta", type=float, default=1.0, help="Beta scaling parameter for non-linear perceptron. Default is 1.0")
     arguments.add_argument("--no_split", action="store_true", help="Skip train/test split, evaluate on full dataset")
+    arguments.add_argument("--layers", type=int, nargs="+", default=[2, 2, 1], help="Layer sizes for multilayer perceptron (e.g. --layers 2 2 1)")
     return arguments.parse_args()
 
 
@@ -49,7 +53,7 @@ def main():
 
     X, y = load_data(args.data)
 
-    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta)
+    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers)
 
     if args.no_split:
         print("Running with no split\n")
@@ -63,12 +67,15 @@ def main():
         )
         perceptron.fit(X_train, y_train)
         print(f"Learned weights: {perceptron.weights}")
-        print(f"Learned bias: {perceptron.bias}")
+        bias = getattr(perceptron, "bias", None)
+        if bias is None:
+            bias = getattr(perceptron, "biases", None)
+        print(f"Learned bias: {bias}")
         predictions = perceptron.predict(X_test)
 
     total = len(y_test)
 
-    if args.type_p == "linear" or args.type_p == "non-linear":
+    if args.type_p == "linear" or args.type_p == "non-linear" or args.type_p == "multilayer":
         # because we are doing floats exact match is always off, add a level of tolerance to interpret a result as "correct"
         if total == 0:
             print("Warning: test set is empty (dataset too small for the given --test_per).")
