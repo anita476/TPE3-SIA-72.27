@@ -1,4 +1,5 @@
 import argparse
+
 import numpy as np
 import pandas as pd
 
@@ -9,7 +10,7 @@ from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
 from utils.test_data_split import test_data_split
 
 
-def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random"):
+def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random", training_mode="online", batch_size=1):
     if type == "simple-step":
         return SimpleStepPerceptron(lr, epochs, seed)
     elif type == "linear":
@@ -17,7 +18,7 @@ def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.
     elif type == "non-linear":
         return SimpleNonLinearPerceptron(lr, epochs, epsilon, seed, activation, beta)
     elif type == "multilayer":
-        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta, activation, initializer)
+        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta, activation, initializer, training_mode, batch_size)
     raise Exception("Unknown perceptron type")
 
 
@@ -38,6 +39,8 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--no_split", action="store_true", help="Skip train/test split, evaluate on full dataset")
     arguments.add_argument("--layers", type=int, nargs="+", default=[2, 2, 1], help="Layer sizes for multilayer perceptron (e.g. --layers 2 2 1)")
     arguments.add_argument("--initializer", type=str, default="random", choices=["random", "xavier", "xavier_n"], help="Weight initializer for multilayer perceptron. Default is random")
+    arguments.add_argument("--training_mode", type=str, default="online", choices=["online", "minibatch"], help="Weight update mode for multilayer perceptron. Default is online")
+    arguments.add_argument("--batch_size", type=int, default=1, help="Mini-batch size for multilayer perceptron when --training_mode minibatch")
     return arguments.parse_args()
 
 
@@ -50,11 +53,11 @@ def load_data(path: str):
 
 def main():
     args = parse_arguments()
-    print(f"Running perceptron {str(args.type_p)} with {int(args.epochs)} epochs and learning rate of {float(args.lr)}\n")
+    print(f"Running perceptron {args.type_p} with {args.epochs} epochs and learning rate of {args.lr}\n")
 
     X, y = load_data(args.data)
 
-    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer)
+    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer, args.training_mode, args.batch_size)
 
     if args.no_split:
         print("Running with no split\n")
@@ -90,8 +93,8 @@ def main():
             mse = np.mean((predictions - y_test) ** 2)
 
             print(f"\nResults on test set ({total} samples):")
-            for i, (pred, expected) in enumerate(zip(predictions, y_test)):
-                match = "✓" if abs(pred - expected) < tolerance else "✗"
+            for i, (pred, expected) in enumerate(zip(predictions, y_test, strict=True)):
+                match = "OK" if abs(pred - expected) < tolerance else "X"
                 print(f"  sample {i + 1}: predicted={pred:.2f}  expected={expected}  {match}")
 
             print(f"\nAccuracy (tolerance={tolerance}): {correct}/{total} = {accuracy * 100:.1f}%")
@@ -106,8 +109,8 @@ def main():
             accuracy = correct / total
 
             print(f"\nResults on test set ({total} samples):")
-            for i, (pred, expected) in enumerate(zip(predictions, y_test)):
-                match = "✓" if pred == expected else "✗"
+            for i, (pred, expected) in enumerate(zip(predictions, y_test, strict=True)):
+                match = "OK" if pred == expected else "X"
                 print(f"  sample {i + 1}: predicted={int(pred)}  expected={int(expected)}  {match}")
 
             print(f"\nAccuracy: {correct}/{total} = {accuracy * 100:.1f}%")

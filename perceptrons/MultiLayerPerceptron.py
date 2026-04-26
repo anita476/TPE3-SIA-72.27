@@ -5,7 +5,7 @@ from perceptrons.initializers import build_initializer
 def _tanh(h, beta=1.0):
     return np.tanh(beta * h)
 
-#Calculates tan again so it uses h and not g(h)
+# Calculates tanh again so it uses h and not g(h).
 def _tanh_derivative(h, beta=1.0):
     return beta * (1 - np.tanh(beta * h)**2)
 
@@ -20,16 +20,20 @@ ACTIVATIONS = {
     "tanh": (_tanh, _tanh_derivative),
     "logistic": (_logistic, _logistic_derivative),
 }
+TRAINING_MODES = {"online", "minibatch"}
 
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh",
-                 initializer="random"):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
         if activation not in ACTIVATIONS:
             activation = "tanh"
+        if training_mode not in TRAINING_MODES:
+            raise ValueError(f"training_mode must be one of {sorted(TRAINING_MODES)}")
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
 
         # layers=[2, 2, 1] => 2 inputs, 2 hidden neurons, 1 output.
         self.layers = list(layers)
@@ -40,6 +44,8 @@ class MultiLayerPerceptron:
         self.activation = activation
         self.g, self.g_prime = ACTIVATIONS[activation]
         self.rng = np.random.default_rng(seed)
+        self.training_mode = training_mode
+        self.batch_size = int(batch_size)
 
         init = build_initializer(initializer)
 
@@ -112,20 +118,45 @@ class MultiLayerPerceptron:
 
         return dW, db
 
-    def fit(self, X, y, X_val=None, y_val=None, val_labels=None, name=""):
+    def _apply_update(self, dW, db):
+        for W, dw, b, d in zip(self.weights, dW, self.biases, db, strict=True):
+            W -= self.learning_rate * dw
+            b -= self.learning_rate * d
+
+    def _zero_gradients(self):
+        return [np.zeros_like(W) for W in self.weights], [np.zeros_like(b) for b in self.biases]
+
+    def _train_batch_epoch(self, X, y, indices):
+        effective_batch_size = 1 if self.training_mode == "online" else self.batch_size
+
+        for start in range(0, len(indices), effective_batch_size):
+            batch_indices = indices[start:start + effective_batch_size]
+            batch_dW, batch_db = self._zero_gradients()
+
+            for i in batch_indices:
+                activations, pre_acts = self._forward(X[i])
+                dW, db = self._backward(activations, pre_acts, y[i])
+                for acc, grad in zip(batch_dW, dW):
+                    acc += grad
+                for acc, grad in zip(batch_db, db):
+                    acc += grad
+
+            current_batch_size = len(batch_indices)
+            mean_dW = [grad / current_batch_size for grad in batch_dW]
+            mean_db = [grad / current_batch_size for grad in batch_db]
+            self._apply_update(mean_dW, mean_db)
+
+    def train_epoch(self, X, y):
         n_samples = X.shape[0]
+        indices = self.rng.permutation(n_samples)
+        self._train_batch_epoch(X, y, indices)
+
+    def fit(self, X, y, X_val=None, y_val=None, val_labels=None, name=""):
         self.errors_ = []
         self.val_errors_ = []
         self.val_accuracies_ = []
         for epoch in range(self.epochs):
-            indices = self.rng.permutation(n_samples)
-
-            for i in indices:
-                activations, pre_acts = self._forward(X[i])
-                dW, db = self._backward(activations, pre_acts, y[i])
-                for W, dw, b, d in zip(self.weights, dW, self.biases, db):
-                    W -= self.learning_rate * dw
-                    b -= self.learning_rate * d
+            self.train_epoch(X, y)
 
             total_error = self._total_error(X, y)
             self.errors_.append(total_error)

@@ -205,6 +205,8 @@ def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_
         config["layers"], config["lr"], config["epochs"],
         config["epsilon"], SEED, config["beta"],
         initializer=config.get("initializer", "random"),
+        training_mode=config.get("training_mode", "online"),
+        batch_size=config.get("batch_size", 1),
     )
     mlp.fit(X_train, y_train, X_val=X_test, y_val=y_test, val_labels=test_labels, name=config["name"])
 
@@ -352,6 +354,8 @@ def save_csvs(results):
             "lr":                cfg["lr"],
             "epochs_configured": cfg["epochs"],
             "initializer":       cfg.get("initializer", "random"),
+            "training_mode":     cfg.get("training_mode", "online"),
+            "batch_size":        cfg.get("batch_size", 1),
             "beta":              cfg.get("beta", 1.0),
         }
         tm = r["test_metrics"]
