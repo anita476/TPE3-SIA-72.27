@@ -20,6 +20,7 @@ def parse_arguments():
     p.add_argument("--activation",  type=str,   default="tanh",   choices=["tanh", "logistic"])
     p.add_argument("--beta",        type=float, default=1.0)
     p.add_argument("--initializer", type=str,   default="xavier", choices=["random", "xavier", "xavier_n"])
+    p.add_argument("--optimizer",   type=str,   default="sgd",    choices=["sgd", "rmsprop", "adam"])
     return p.parse_args()
 
 
@@ -38,6 +39,7 @@ def main():
     mlp = MultiLayerPerceptron(
         args.layers, args.lr, args.epochs, args.epsilon,
         args.seed, args.beta, args.activation, args.initializer,
+        optimizer=args.optimizer,
     )
     mlp.fit(X_train, y_train, X_val=X_test, y_val=y_test, val_labels=test_labels)
 

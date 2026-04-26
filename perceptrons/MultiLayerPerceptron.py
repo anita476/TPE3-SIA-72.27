@@ -1,5 +1,6 @@
 import numpy as np
 from perceptrons.initializers import build_initializer
+from utils.optimizers import build_optimizer
 
 
 def _tanh(h, beta=1.0):
@@ -25,7 +26,7 @@ TRAINING_MODES = {"online", "minibatch"}
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd"):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
         if activation not in ACTIVATIONS:
@@ -47,6 +48,7 @@ class MultiLayerPerceptron:
         self.training_mode = training_mode
         self.batch_size = int(batch_size)
 
+        self.optimizer = build_optimizer(optimizer, learning_rate)
         init = build_initializer(initializer)
 
         # One weight matrix per connection between consecutive layers.
@@ -119,9 +121,7 @@ class MultiLayerPerceptron:
         return dW, db
 
     def _apply_update(self, dW, db):
-        for W, dw, b, d in zip(self.weights, dW, self.biases, db, strict=True):
-            W -= self.learning_rate * dw
-            b -= self.learning_rate * d
+        self.optimizer.update(self.weights, dW, self.biases, db)
 
     def _zero_gradients(self):
         return [np.zeros_like(W) for W in self.weights], [np.zeros_like(b) for b in self.biases]

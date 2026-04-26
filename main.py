@@ -9,7 +9,7 @@ from perceptrons.SimpleNonLinearPerceptron import SimpleNonLinearPerceptron
 from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
 from utils.test_data_split import test_data_split
 
-def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random", training_mode="online", batch_size=1):
+def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random", training_mode="online", batch_size=1, optimizer="sgd"):
     if type == "simple-step":
         return SimpleStepPerceptron(lr, epochs, seed)
     elif type == "linear":
@@ -17,7 +17,7 @@ def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.
     elif type == "non-linear":
         return SimpleNonLinearPerceptron(lr, epochs, epsilon, seed, activation, beta)
     elif type == "multilayer":
-        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta, activation, initializer, training_mode, batch_size)
+        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta, activation, initializer, training_mode, batch_size, optimizer)
     raise Exception("Unknown perceptron type")
 
 
@@ -40,6 +40,7 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--initializer", type=str, default="random", choices=["random", "xavier", "xavier_n"], help="Weight initializer for multilayer perceptron. Default is random")
     arguments.add_argument("--training_mode", type=str, default="online", choices=["online", "minibatch"], help="Weight update mode for multilayer perceptron. Default is online")
     arguments.add_argument("--batch_size", type=int, default=1, help="Mini-batch size for multilayer perceptron when --training_mode minibatch")
+    arguments.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "rmsprop", "adam"], help="Optimizer for multilayer perceptron. Default is sgd")
     return arguments.parse_args()
 
 
@@ -56,7 +57,7 @@ def main():
 
     X, y = load_data(args.data)
 
-    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer, args.training_mode, args.batch_size)
+    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer, args.training_mode, args.batch_size, args.optimizer)
 
     if args.no_split:
         print("Running with no split\n")

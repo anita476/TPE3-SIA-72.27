@@ -5,8 +5,8 @@ import numpy as np
 # avoiding vanishing (tanh saturates -> gradients == 0) or exploding gradients.
 #
 # Interface:
-#   init_weights(fan_in, fan_out, rng) → ndarray (fan_out, fan_in)
-#   init_biases(fan_out, rng)          → ndarray (fan_out,)  [always zeros]
+#   init_weights(fan_in, fan_out, rng) -> ndarray (fan_out, fan_in)
+#   init_biases(fan_out, rng)          -> ndarray (fan_out,)  [always zeros]
 
 
 class RandomUniform:

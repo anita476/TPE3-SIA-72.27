@@ -170,6 +170,7 @@ def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_
         initializer=config.get("initializer", "random"),
         training_mode=config.get("training_mode", "online"),
         batch_size=config.get("batch_size", 1),
+        optimizer=config.get("optimizer", "sgd"),
     )
     mlp.fit(X_train, y_train, X_val=X_test, y_val=y_test, val_labels=test_labels, name=config["name"])
 
