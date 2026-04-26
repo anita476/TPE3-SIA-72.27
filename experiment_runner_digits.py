@@ -4,8 +4,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import multiprocessing as mp
+from datasets.digit_dataset_loader import load_digits, encode_one_hot
 from datetime import datetime
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
+from utils.metrics import compute_metrics, epochs_to_threshold, save_results_csvs
+from utils.visualization import (
+    print_summary,
+    plot_loss_curves, plot_accuracy_bars, plot_convergence,
+    plot_confusion_matrices, plot_per_class_f1, plot_summary_table,
+)
 
 RESULTS_DIR   = "results"
 SUMMARY_CSV   = os.path.join(RESULTS_DIR, "summary.csv")
@@ -144,61 +151,6 @@ EXPERIMENTS = [
 # ]
 
 
-def load(path):
-    df = pd.read_csv(path)
-    images = df["image"].apply(lambda s: np.array(ast.literal_eval(s), dtype=np.float32))
-    X = np.stack(images.to_numpy())
-    y_labels = df["label"].to_numpy(dtype=np.int64)
-    return X, y_labels
-
-
-def encode(labels, n_outputs):
-    targets = np.full((len(labels), n_outputs), -1.0)
-    targets[np.arange(len(labels)), labels] = 1.0
-    return targets
-
-
-def _epochs_to_threshold(val_accuracies, threshold):
-    for i, acc in enumerate(val_accuracies):
-        if acc >= threshold:
-            return i + 1
-    return None
-
-
-def compute_metrics(y_true, y_pred, n_classes=10):
-    cm = np.zeros((n_classes, n_classes), dtype=int)
-    for t, p in zip(y_true, y_pred):
-        cm[t, p] += 1
-
-    precision = np.zeros(n_classes)
-    recall    = np.zeros(n_classes)
-    f1        = np.zeros(n_classes)
-
-    for k in range(n_classes):
-        tp = cm[k, k]
-        fp = cm[:, k].sum() - tp
-        fn = cm[k, :].sum() - tp
-        precision[k] = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall[k]    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        denom        = precision[k] + recall[k]
-        f1[k]        = 2 * precision[k] * recall[k] / denom if denom > 0 else 0.0
-
-    support = cm.sum(axis=1)
-    min_class_f1 = f1.min()
-
-    return {
-        "confusion_matrix": cm,
-        "precision":        precision,
-        "recall":           recall,
-        "f1":               f1,
-        "support":          support,
-        "macro_precision":  precision.mean(),
-        "macro_recall":     recall.mean(),
-        "macro_f1":         f1.mean(),
-        "min_class_f1":     min_class_f1,
-    }
-
-
 def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_labels):
     print(f"\n--- {config['name']} ---")
     mlp = MultiLayerPerceptron(
@@ -237,8 +189,8 @@ def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_
         "best_test_acc":    best_test_acc,
         "best_epoch":       best_epoch,
         "gap":              train_acc - test_acc,
-        "epochs_to_80":     _epochs_to_threshold(val_accs, 0.80),
-        "epochs_to_85":     _epochs_to_threshold(val_accs, 0.85),
+        "epochs_to_80":     epochs_to_threshold(val_accs, 0.80),
+        "epochs_to_85":     epochs_to_threshold(val_accs, 0.85),
         "final_train_loss": train_loss[-1] if train_loss else None,
         "final_test_loss":  test_loss[-1]  if test_loss  else None,
         "train_loss":       train_loss,
@@ -248,196 +200,6 @@ def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_
         "test_metrics":     test_metrics,
     }
 
-
-def plot_loss_curves(results):
-    fig, (ax_train, ax_test) = plt.subplots(1, 2, figsize=(14, 5))
-
-    for r in results:
-        epochs = range(1, len(r["train_loss"]) + 1)
-        ax_train.plot(epochs, r["train_loss"], label=r["name"])
-        ax_test.plot(epochs,  r["test_loss"],  label=r["name"])
-
-    ax_train.set_title("Train loss")
-    ax_train.set_xlabel("Epoch")
-    ax_train.set_ylabel("Loss")
-    ax_train.legend(fontsize=7)
-
-    ax_test.set_title("Test loss")
-    ax_test.set_xlabel("Epoch")
-    ax_test.set_ylabel("Loss")
-    ax_test.legend(fontsize=7)
-
-    plt.tight_layout()
-    plt.savefig("plots/experiment_loss_curves.png")
-    print("Saved: plots/experiment_loss_curves.png")
-
-
-def plot_accuracy_bars(results):
-    names      = [r["name"]      for r in results]
-    train_accs = [r["train_acc"] for r in results]
-    test_accs  = [r["test_acc"]  for r in results]
-
-    x = np.arange(len(names))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(max(8, len(names) * 2), 5))
-    ax.bar(x - width / 2, train_accs, width, label="Train")
-    ax.bar(x + width / 2, test_accs,  width, label="Test")
-
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Train vs test accuracy per experiment")
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=15, ha="right", fontsize=8)
-    ax.set_ylim(0, 1)
-    ax.legend()
-
-    for i, (tr, te) in enumerate(zip(train_accs, test_accs)):
-        ax.text(i - width / 2, tr + 0.01, f"{tr*100:.1f}%", ha="center", fontsize=7)
-        ax.text(i + width / 2, te + 0.01, f"{te*100:.1f}%", ha="center", fontsize=7)
-
-    plt.tight_layout()
-    plt.savefig("plots/experiment_accuracy.png")
-    print("Saved: plots/experiment_accuracy.png")
-
-
-def plot_convergence(results):
-    plt.figure(figsize=(10, 5))
-    for r in results:
-        accs = r["test_acc_per_epoch"]
-        if accs:
-            plt.plot(range(1, len(accs) + 1), [a * 100 for a in accs], label=r["name"])
-    plt.xlabel("Epoch")
-    plt.ylabel("Test accuracy (%)")
-    plt.title("Test accuracy over epochs (convergence speed)")
-    plt.legend(fontsize=7)
-    plt.tight_layout()
-    plt.savefig("plots/experiment_convergence.png")
-    print("Saved: plots/experiment_convergence.png")
-
-
-def print_summary(results):
-    header = f"{'Experiment':<32} {'Train':>7} {'Test':>7} {'Best':>7} {'BEpoch':>7} {'Gap':>6} {'MacroF1':>8} {'MinF1':>6} {'E→80%':>6} {'E→85%':>6}"
-    print("\n" + "=" * len(header))
-    print(header)
-    print("=" * len(header))
-    for r in results:
-        e80 = str(r["epochs_to_80"]) if r["epochs_to_80"] else "-"
-        e85 = str(r["epochs_to_85"]) if r["epochs_to_85"] else "-"
-        tm  = r["test_metrics"]
-        print(
-            f"{r['name']:<32}"
-            f" {r['train_acc']*100:>6.1f}%"
-            f" {r['test_acc']*100:>6.1f}%"
-            f" {r['best_test_acc']*100:>6.1f}%"
-            f" {str(r['best_epoch']):>7}"
-            f" {r['gap']*100:>5.1f}pp"
-            f" {tm['macro_f1']*100:>7.1f}%"
-            f" {tm['min_class_f1']*100:>5.1f}%"
-            f" {e80:>6}"
-            f" {e85:>6}"
-        )
-    print("=" * len(header))
-
-
-def save_csvs(results):
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-
-    summary_rows  = []
-    curve_rows    = []
-    perclass_rows = []
-
-    for r in results:
-        cfg = r["config"]
-        base = {
-            "name":              r["name"],
-            "layers":            str(cfg["layers"]),
-            "lr":                cfg["lr"],
-            "epochs_configured": cfg["epochs"],
-            "initializer":       cfg.get("initializer", "random"),
-            "training_mode":     cfg.get("training_mode", "online"),
-            "batch_size":        cfg.get("batch_size", 1),
-            "beta":              cfg.get("beta", 1.0),
-        }
-        tm = r["test_metrics"]
-        summary_rows.append({
-            **base,
-            "train_acc":        round(r["train_acc"],       4),
-            "test_acc":         round(r["test_acc"],        4),
-            "best_test_acc":    round(r["best_test_acc"],   4),
-            "best_epoch":       r["best_epoch"],
-            "gap":              round(r["gap"],             4),
-            "macro_precision":  round(tm["macro_precision"], 4),
-            "macro_recall":     round(tm["macro_recall"],    4),
-            "macro_f1":         round(tm["macro_f1"],        4),
-            "min_class_f1":     round(tm["min_class_f1"],    4),
-            "epochs_to_80":     r["epochs_to_80"],
-            "epochs_to_85":     r["epochs_to_85"],
-            "final_train_loss": round(r["final_train_loss"], 6) if r["final_train_loss"] else None,
-            "final_test_loss":  round(r["final_test_loss"],  6) if r["final_test_loss"]  else None,
-        })
-        for epoch, (trl, tel, acc) in enumerate(
-            zip(r["train_loss"], r["test_loss"], r["test_acc_per_epoch"]), start=1
-        ):
-            curve_rows.append({
-                **base,
-                "epoch":      epoch,
-                "train_loss": round(trl, 6),
-                "test_loss":  round(tel, 6),
-                "test_acc":   round(acc, 4),
-            })
-        for split, metrics in [("train", r["train_metrics"]), ("test", tm)]:
-            for k in range(10):
-                perclass_rows.append({
-                    **base,
-                    "set":       split,
-                    "class":     k,
-                    "precision": round(metrics["precision"][k], 4),
-                    "recall":    round(metrics["recall"][k],    4),
-                    "f1":        round(metrics["f1"][k],        4),
-                    "support":   int(metrics["support"][k]),
-                })
-
-    summary_df  = pd.DataFrame(summary_rows)
-    curves_df   = pd.DataFrame(curve_rows)
-    perclass_df = pd.DataFrame(perclass_rows)
-
-    write_header = not os.path.exists(SUMMARY_CSV)
-    summary_df.to_csv(SUMMARY_CSV,  mode="a", header=write_header, index=False)
-
-    write_header = not os.path.exists(CURVES_CSV)
-    curves_df.to_csv(CURVES_CSV,    mode="a", header=write_header, index=False)
-
-    write_header = not os.path.exists(PERCLASS_CSV)
-    perclass_df.to_csv(PERCLASS_CSV, mode="a", header=write_header, index=False)
-
-    print(f"CSVs guardados en {RESULTS_DIR}/")
-
-
-def plot_confusion_matrices(results):
-    n = len(results)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
-    if n == 1:
-        axes = [axes]
-
-    for ax, r in zip(axes, results):
-        cm = r["test_metrics"]["confusion_matrix"]
-        ax.imshow(cm, cmap="Blues")
-        ax.set_title(r["name"], fontsize=7)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("True")
-        ax.set_xticks(range(10))
-        ax.set_yticks(range(10))
-        threshold = cm.max() / 2
-        for i in range(10):
-            for j in range(10):
-                ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=6,
-                        color="white" if cm[i, j] > threshold else "black")
-
-    plt.tight_layout()
-    plt.savefig("plots/confusion_matrices.png")
-    print("Saved: plots/confusion_matrices.png")
-
-
 def _worker(args):
     config, X_train, y_train, train_labels, X_test, y_test, test_labels = args
     return run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_labels)
@@ -445,10 +207,10 @@ def _worker(args):
 
 def main():
     print("Loading data...")
-    X_train, train_labels = load(TRAIN_PATH)
-    X_test,  test_labels  = load(TEST_PATH)
-    y_train = encode(train_labels, 10)
-    y_test  = encode(test_labels,  10)
+    X_train, train_labels = load_digits(TRAIN_PATH)
+    X_test,  test_labels  = load_digits(TEST_PATH)
+    y_train = encode_one_hot(train_labels, 10)
+    y_test  = encode_one_hot(test_labels,  10)
 
     args = [(c, X_train, y_train, train_labels, X_test, y_test, test_labels) for c in EXPERIMENTS]
 
@@ -459,11 +221,14 @@ def main():
 
     results.sort(key=lambda r: r["name"])
     print_summary(results)
-    save_csvs(results)
+    save_results_csvs(results, SUMMARY_CSV, CURVES_CSV, PERCLASS_CSV)
     plot_loss_curves(results)
     plot_accuracy_bars(results)
     plot_convergence(results)
     plot_confusion_matrices(results)
+    plot_confusion_matrices(results)
+    plot_per_class_f1(results)
+    plot_summary_table(results)
 
 
 if __name__ == "__main__":
