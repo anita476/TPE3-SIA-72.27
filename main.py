@@ -9,7 +9,7 @@ from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
 from utils.test_data_split import test_data_split
 
 
-def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None):
+def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random"):
     if type == "simple-step":
         return SimpleStepPerceptron(lr, epochs, seed)
     elif type == "linear":
@@ -17,7 +17,7 @@ def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.
     elif type == "non-linear":
         return SimpleNonLinearPerceptron(lr, epochs, epsilon, seed, activation, beta)
     elif type == "multilayer":
-        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta, activation)
+        return MultiLayerPerceptron(layers, lr, epochs, epsilon, seed, beta, activation, initializer)
     raise Exception("Unknown perceptron type")
 
 
@@ -37,6 +37,7 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--beta", type=float, default=1.0, help="Beta scaling parameter for non-linear perceptron. Default is 1.0")
     arguments.add_argument("--no_split", action="store_true", help="Skip train/test split, evaluate on full dataset")
     arguments.add_argument("--layers", type=int, nargs="+", default=[2, 2, 1], help="Layer sizes for multilayer perceptron (e.g. --layers 2 2 1)")
+    arguments.add_argument("--initializer", type=str, default="random", choices=["random", "xavier", "xavier_n"], help="Weight initializer for multilayer perceptron. Default is random")
     return arguments.parse_args()
 
 
@@ -53,7 +54,7 @@ def main():
 
     X, y = load_data(args.data)
 
-    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers)
+    perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer)
 
     if args.no_split:
         print("Running with no split\n")

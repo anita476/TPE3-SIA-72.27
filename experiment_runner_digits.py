@@ -7,9 +7,10 @@ import multiprocessing as mp
 from datetime import datetime
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 
-RESULTS_DIR  = "results"
-SUMMARY_CSV  = os.path.join(RESULTS_DIR, "summary.csv")
-CURVES_CSV   = os.path.join(RESULTS_DIR, "curves.csv")
+RESULTS_DIR   = "results"
+SUMMARY_CSV   = os.path.join(RESULTS_DIR, "summary.csv")
+CURVES_CSV    = os.path.join(RESULTS_DIR, "curves.csv")
+PERCLASS_CSV  = os.path.join(RESULTS_DIR, "per_class.csv")
 
 TRAIN_PATH = "datasets/digits.csv"
 TEST_PATH  = "datasets/digits_test.csv"
@@ -59,8 +60,8 @@ EXPERIMENTS = [
     # {"name": "xavier [784,20,10]",  "layers": [784,  20, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
     # {"name": "random [784,100,10]", "layers": [784, 100, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "random"},
     # {"name": "xavier [784,100,10]", "layers": [784, 100, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-    {"name": "xavier lr=0.01 [784,100,10]",  "layers": [784,  100, 10], "lr": 0.01, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-    # {"name": "xavier lr=0.001 [784,10,10]",  "layers": [784,  20, 10], "lr": 0.01, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    # {"name": "xavier lr=0.01 [784,100,10]",  "layers": [784,  100, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    # {"name": "xavier lr=0.01 [784,50,10]",  "layers": [784,  50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
     # {"name": "xavier lr=0.1 [784,20,10]",  "layers": [784,  20, 10], "lr": 0.01, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
 ]
 # Results (500 epochs, LR=0.1)
@@ -76,16 +77,63 @@ EXPERIMENTS = [
 # xavier lr=0.01 [784,20,10]         99.0%   84.1%   84.8%      55  14.9pp      1      - <-
 # xavier lr=0.1 [784,20,10]          93.6%   82.6%   85.2%     384  11.0pp     42    384
 
-
+# Trying different number of layers
 # xavier lr=0.01 [784,50,10]         99.4%   85.9%   86.3%      25  13.6pp      1      3
+# xavier lr=0.01 [784,100,10]        99.7%   86.9%   87.0%     245  12.8pp      1      4
 
+# -> CONCLUSION: xavier does best with learning rate = 0.01. At around 50 for the first layer, the performance is almost the same as with 100 so in terms of effiency it is kind of like a threshold. 
 
-# --- Step 4: 2 hidden layers sweep (best LR=0.1, best single hidden size from step 2) ---
+# --- Step 4: 2 hidden layers sweep (best LR=0.01, best single hidden size from step 2) ---
 # EXPERIMENTS = [
-#     {"name": "[784,100,10]",    "layers": [784, 100,     10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0},
-#     {"name": "[784,100,50,10]", "layers": [784, 100, 50, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0},
-#     {"name": "[784,100,25,10]", "layers": [784, 100, 25, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0},
+#     {"name": "xavier lr=0. [784,50,25,10]",  "layers": [784, 50,  25, 10], "lr": 0.01, "initializer": "xavier", "epochs": 250, "epsilon": 1e-6, "beta": 1.0,},
+#     {"name": "xavier lr=0.01 [784,50,10]",  "layers": [784,  50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+
+#     # {"name": "xavier [784,100,50,10]", "layers": [784, 100, 50, 10], "lr": 0.01, "initializer": "xavier", "epochs": 500, "epsilon": 1e-6, "beta": 1.0,},
+#     # {"name": "xavier [784,100,25,10]", "layers": [784, 100, 25, 10], "lr": 0.01, "initializer": "xavier", "epochs": 500, "epsilon": 1e-6, "beta": 1.0,},
 # ]
+
+# Experiment                         Train    Test    Best  BEpoch    Gap  E→80%  E→85%
+# =====================================================================================
+# xavier [784,100,25,10]             99.8%   86.5%   86.7%      21  13.4pp      5      7
+# xavier [784,100,50,10]             99.8%   86.5%   86.8%      44  13.4pp      1      5
+# xavier [784,50,25,10]              99.7%   86.3%   86.5%      11  13.4pp      2      6 <-
+
+# EXPERIMENTS = [
+#     {"name": "xavier lr=0.01 [784,10,10]",  "layers": [784,  10, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.01 [784,20,10]",  "layers": [784,  20, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.01 [784,50,10]",  "layers": [784,  50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.001 [784,10,10]",  "layers": [784,  10, 10], "lr": 0.001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.001 [784,20,10]",  "layers": [784,  20, 10], "lr": 0.001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.001 [784,50,10]",  "layers": [784,  50, 10], "lr": 0.001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+# ]
+
+# xavier lr=0.001 [784,10,10]        97.9%   81.3%   82.5%      57  16.6pp    76.5%   0.0%     12      -
+# xavier lr=0.001 [784,20,10]        98.8%   83.8%   84.1%      24  15.0pp    79.2%   0.0%      3      -
+# xavier lr=0.001 [784,50,10]        99.4%   86.3%   86.3%     130  13.1pp    81.6%   0.0%      4     23
+# xavier lr=0.01 [784,10,10]         97.5%   80.2%   81.8%      15  17.4pp    75.4%   0.0%      5      -
+# xavier lr=0.01 [784,20,10]         99.0%   84.2%   84.8%      55  14.8pp    79.5%   0.0%      1      -
+# xavier lr=0.01 [784,50,10]         99.4%   85.7%   86.3%      25  13.6pp    81.1%   0.0%      1      3
+
+## Probando neuronas para learning rate = 0.01
+# EXPERIMENTS = [
+#     {"name": "xavier lr=0.01 [784,50,10]",  "layers": [784,  50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.01 [784,70,10]",  "layers": [784,  70, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     {"name": "xavier lr=0.01 [784,100,10]",  "layers": [784,  100, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+# ]
+
+
+EXPERIMENTS = [
+    # baseline (ya lo tenés, pero incluilo para comparación justa en el mismo run)
+    {"name": "1L [784,100,10]",       "layers": [784, 100,      10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    # 2 capas — funnel gradual
+    {"name": "2L [784,100,50,10]",    "layers": [784, 100, 50,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    # 2 capas — funnel más agresivo
+    {"name": "2L [784,100,30,10]",    "layers": [784, 100, 30,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    # 2 capas — idk
+    {"name": "2L [784,50,20,10]",    "layers": [784, 50, 20,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    # 3 capas — compresión progresiva
+    {"name": "3L [784,100,50,25,10]", "layers": [784, 100, 50, 25, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+]
 
 # --- Step 4: Optimizer sweep (best arch=[784,20,10], Adam/RMSProp use smaller lr) ---
 # EXPERIMENTS = [
@@ -117,6 +165,40 @@ def _epochs_to_threshold(val_accuracies, threshold):
     return None
 
 
+def compute_metrics(y_true, y_pred, n_classes=10):
+    cm = np.zeros((n_classes, n_classes), dtype=int)
+    for t, p in zip(y_true, y_pred):
+        cm[t, p] += 1
+
+    precision = np.zeros(n_classes)
+    recall    = np.zeros(n_classes)
+    f1        = np.zeros(n_classes)
+
+    for k in range(n_classes):
+        tp = cm[k, k]
+        fp = cm[:, k].sum() - tp
+        fn = cm[k, :].sum() - tp
+        precision[k] = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall[k]    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        denom        = precision[k] + recall[k]
+        f1[k]        = 2 * precision[k] * recall[k] / denom if denom > 0 else 0.0
+
+    support = cm.sum(axis=1)
+    min_class_f1 = f1.min()
+
+    return {
+        "confusion_matrix": cm,
+        "precision":        precision,
+        "recall":           recall,
+        "f1":               f1,
+        "support":          support,
+        "macro_precision":  precision.mean(),
+        "macro_recall":     recall.mean(),
+        "macro_f1":         f1.mean(),
+        "min_class_f1":     min_class_f1,
+    }
+
+
 def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_labels):
     print(f"\n--- {config['name']} ---")
     mlp = MultiLayerPerceptron(
@@ -138,25 +220,30 @@ def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_
     best_epoch    = int(np.argmax(val_accs)) + 1 if val_accs else None
     best_test_acc = float(np.max(val_accs))      if val_accs else test_acc
 
+    train_metrics = compute_metrics(train_labels, train_preds)
+    test_metrics  = compute_metrics(test_labels,  test_preds)
+
     print(f"Train accuracy: {train_acc * 100:.1f}%  |  Test accuracy: {test_acc * 100:.1f}%"
-          f"  |  Best: {best_test_acc * 100:.1f}% @ epoch {best_epoch}")
+          f"  |  Best: {best_test_acc * 100:.1f}% @ epoch {best_epoch}"
+          f"  |  Macro F1: {test_metrics['macro_f1'] * 100:.1f}%")
 
     return {
-        "name":           config["name"],
-        "config":         config,
-        "timestamp":      datetime.now().isoformat(timespec="seconds"),
-        "train_acc":      train_acc,
-        "test_acc":       test_acc,
-        "best_test_acc":  best_test_acc,
-        "best_epoch":     best_epoch,
-        "gap":            train_acc - test_acc,
-        "epochs_to_80":   _epochs_to_threshold(val_accs, 0.80),
-        "epochs_to_85":   _epochs_to_threshold(val_accs, 0.85),
+        "name":             config["name"],
+        "config":           config,
+        "train_acc":        train_acc,
+        "test_acc":         test_acc,
+        "best_test_acc":    best_test_acc,
+        "best_epoch":       best_epoch,
+        "gap":              train_acc - test_acc,
+        "epochs_to_80":     _epochs_to_threshold(val_accs, 0.80),
+        "epochs_to_85":     _epochs_to_threshold(val_accs, 0.85),
         "final_train_loss": train_loss[-1] if train_loss else None,
         "final_test_loss":  test_loss[-1]  if test_loss  else None,
-        "train_loss":     train_loss,
-        "test_loss":      test_loss,
+        "train_loss":       train_loss,
+        "test_loss":        test_loss,
         "test_acc_per_epoch": val_accs,
+        "train_metrics":    train_metrics,
+        "test_metrics":     test_metrics,
     }
 
 
@@ -227,13 +314,14 @@ def plot_convergence(results):
 
 
 def print_summary(results):
-    header = f"{'Experiment':<32} {'Train':>7} {'Test':>7} {'Best':>7} {'BEpoch':>7} {'Gap':>6} {'E→80%':>6} {'E→85%':>6}"
+    header = f"{'Experiment':<32} {'Train':>7} {'Test':>7} {'Best':>7} {'BEpoch':>7} {'Gap':>6} {'MacroF1':>8} {'MinF1':>6} {'E→80%':>6} {'E→85%':>6}"
     print("\n" + "=" * len(header))
     print(header)
     print("=" * len(header))
     for r in results:
         e80 = str(r["epochs_to_80"]) if r["epochs_to_80"] else "-"
         e85 = str(r["epochs_to_85"]) if r["epochs_to_85"] else "-"
+        tm  = r["test_metrics"]
         print(
             f"{r['name']:<32}"
             f" {r['train_acc']*100:>6.1f}%"
@@ -241,6 +329,8 @@ def print_summary(results):
             f" {r['best_test_acc']*100:>6.1f}%"
             f" {str(r['best_epoch']):>7}"
             f" {r['gap']*100:>5.1f}pp"
+            f" {tm['macro_f1']*100:>7.1f}%"
+            f" {tm['min_class_f1']*100:>5.1f}%"
             f" {e80:>6}"
             f" {e85:>6}"
         )
@@ -250,27 +340,32 @@ def print_summary(results):
 def save_csvs(results):
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
-    summary_rows = []
-    curve_rows   = []
+    summary_rows  = []
+    curve_rows    = []
+    perclass_rows = []
 
     for r in results:
         cfg = r["config"]
         base = {
-            "timestamp": r["timestamp"],
-            "name":      r["name"],
-            "layers":    str(cfg["layers"]),
-            "lr":        cfg["lr"],
+            "name":              r["name"],
+            "layers":            str(cfg["layers"]),
+            "lr":                cfg["lr"],
             "epochs_configured": cfg["epochs"],
-            "optimizer": cfg.get("optimizer", "sgd"),
-            "beta":      cfg.get("beta", 1.0),
+            "initializer":       cfg.get("initializer", "random"),
+            "beta":              cfg.get("beta", 1.0),
         }
+        tm = r["test_metrics"]
         summary_rows.append({
             **base,
-            "train_acc":        round(r["train_acc"],      4),
-            "test_acc":         round(r["test_acc"],       4),
-            "best_test_acc":    round(r["best_test_acc"],  4),
+            "train_acc":        round(r["train_acc"],       4),
+            "test_acc":         round(r["test_acc"],        4),
+            "best_test_acc":    round(r["best_test_acc"],   4),
             "best_epoch":       r["best_epoch"],
-            "gap":              round(r["gap"],            4),
+            "gap":              round(r["gap"],             4),
+            "macro_precision":  round(tm["macro_precision"], 4),
+            "macro_recall":     round(tm["macro_recall"],    4),
+            "macro_f1":         round(tm["macro_f1"],        4),
+            "min_class_f1":     round(tm["min_class_f1"],    4),
             "epochs_to_80":     r["epochs_to_80"],
             "epochs_to_85":     r["epochs_to_85"],
             "final_train_loss": round(r["final_train_loss"], 6) if r["final_train_loss"] else None,
@@ -286,17 +381,57 @@ def save_csvs(results):
                 "test_loss":  round(tel, 6),
                 "test_acc":   round(acc, 4),
             })
+        for split, metrics in [("train", r["train_metrics"]), ("test", tm)]:
+            for k in range(10):
+                perclass_rows.append({
+                    **base,
+                    "set":       split,
+                    "class":     k,
+                    "precision": round(metrics["precision"][k], 4),
+                    "recall":    round(metrics["recall"][k],    4),
+                    "f1":        round(metrics["f1"][k],        4),
+                    "support":   int(metrics["support"][k]),
+                })
 
-    summary_df = pd.DataFrame(summary_rows)
-    curves_df  = pd.DataFrame(curve_rows)
+    summary_df  = pd.DataFrame(summary_rows)
+    curves_df   = pd.DataFrame(curve_rows)
+    perclass_df = pd.DataFrame(perclass_rows)
 
     write_header = not os.path.exists(SUMMARY_CSV)
-    summary_df.to_csv(SUMMARY_CSV, mode="a", header=write_header, index=False)
+    summary_df.to_csv(SUMMARY_CSV,  mode="a", header=write_header, index=False)
 
     write_header = not os.path.exists(CURVES_CSV)
-    curves_df.to_csv(CURVES_CSV,  mode="a", header=write_header, index=False)
+    curves_df.to_csv(CURVES_CSV,    mode="a", header=write_header, index=False)
 
-    print(f"Resultados guardados en {SUMMARY_CSV} y {CURVES_CSV}")
+    write_header = not os.path.exists(PERCLASS_CSV)
+    perclass_df.to_csv(PERCLASS_CSV, mode="a", header=write_header, index=False)
+
+    print(f"CSVs guardados en {RESULTS_DIR}/")
+
+
+def plot_confusion_matrices(results):
+    n = len(results)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
+    if n == 1:
+        axes = [axes]
+
+    for ax, r in zip(axes, results):
+        cm = r["test_metrics"]["confusion_matrix"]
+        ax.imshow(cm, cmap="Blues")
+        ax.set_title(r["name"], fontsize=7)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+        ax.set_xticks(range(10))
+        ax.set_yticks(range(10))
+        threshold = cm.max() / 2
+        for i in range(10):
+            for j in range(10):
+                ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=6,
+                        color="white" if cm[i, j] > threshold else "black")
+
+    plt.tight_layout()
+    plt.savefig("plots/confusion_matrices.png")
+    print("Saved: plots/confusion_matrices.png")
 
 
 def _worker(args):
@@ -320,9 +455,11 @@ def main():
 
     results.sort(key=lambda r: r["name"])
     print_summary(results)
+    save_csvs(results)
     plot_loss_curves(results)
     plot_accuracy_bars(results)
     plot_convergence(results)
+    plot_confusion_matrices(results)
 
 
 if __name__ == "__main__":
