@@ -1,11 +1,7 @@
-import ast
 import os
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import multiprocessing as mp
 from datasets.digit_dataset_loader import load_digits, encode_one_hot
-from datetime import datetime
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from utils.metrics import compute_metrics, epochs_to_threshold, save_results_csvs
 from utils.visualization import (
@@ -143,15 +139,39 @@ EXPERIMENTS = [
 # ]
 
 # --- Step 4: Changing batch sizes ---
+# EXPERIMENTS = [
+#     {"name": "online b=1",    "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online",    "batch_size": 1},
+#     {"name": "mini-b b=16",   "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16},
+#     {"name": "mini-b b=64",   "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 64},
+#     {"name": "mini-b b=256",  "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 256},
+#     {"name": "mini-b b=1024", "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 1024},
+# ]
+
+# =====================================================================================================
+# Experiment                         Train    Test    Best  BEpoch    Gap  MacroF1  MinF1  E→80%  E→85%
+# =====================================================================================================
+# mini-b b=1024                      93.2%   80.8%   80.8%     247  12.4pp    75.5%   0.0%    175      -
+# mini-b b=16                        99.4%   86.4%   86.5%     139  13.1pp    81.8%   0.0%      3     37
+# mini-b b=256                       96.1%   83.8%   83.8%     236  12.4pp    78.9%   0.0%     48      -
+# mini-b b=64                        98.6%   85.8%   85.9%     245  12.8pp    81.1%   0.0%     12    144
+# online b=1                         99.7%   86.8%   87.0%     245  12.8pp    82.1%   0.0%      1      4 <- this seems like the best
+# =====================================================================================================
+
+
 EXPERIMENTS = [
-    {"name": "online b=1",    "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online",    "batch_size": 1},
-    {"name": "mini-b b=16",   "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16},
-    {"name": "mini-b b=64",   "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 64},
-    {"name": "mini-b b=256",  "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 256},
-    {"name": "mini-b b=1024", "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 1024},
+    # SGD — known best
+    {"name": "sgd     lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "sgd"},
+
+    # Adam — paper recommends 0.001; try 0.01 too to see what happens
+    {"name": "adam    lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+    {"name": "adam    lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+    {"name": "adam    lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+
+    # RMSProp — adaptive like Adam but no momentum; usually needs smaller LR
+    {"name": "rmsprop lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+    {"name": "rmsprop lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+    {"name": "rmsprop lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
 ]
-
-
 
 # --- Step 4: Optimizer sweep (best arch=[784,20,10], Adam/RMSProp use smaller lr) ---
 # EXPERIMENTS = [

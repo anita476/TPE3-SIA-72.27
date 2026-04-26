@@ -1,5 +1,5 @@
 import numpy as np
-from perceptrons.initializers import build_initializer
+from utils.initializers import build_initializer
 from utils.optimizers import build_optimizer
 
 
