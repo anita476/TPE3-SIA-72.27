@@ -1,66 +1,64 @@
-import ast
-
+import argparse
 import numpy as np
-import pandas as pd
-from main import build_perceptron, parse_arguments
+
+from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
+from datasets.digit_dataset_loader import load_digits, encode_one_hot
+from utils.metrics import compute_metrics
+from utils.visualization import plot_loss_curve, plot_confusion_matrix, plot_per_class_metrics
+
+TRAIN_PATH = "datasets/digits.csv"
+TEST_PATH  = "datasets/digits_test.csv"
 
 
-DIGITS_TEST_PATH = "datasets/digits_test.csv"
-DIGIS_TRAIN_PATH = "datasets/digits.csv"
-EVAL_RESULTS_PATH = "digits_eval_results.csv"
-
-def parse_digits_from_csv(filename):
-    df = pd.read_csv(filename)
-
-    images = df["image"].apply(lambda s: np.array(ast.literal_eval(s), dtype=np.float32))
-    X = np.stack(images.to_numpy())
-    Y = df["label"].to_numpy(dtype=np.int64)
-    return X, Y
-
-def encode_digit_targets(labels, n_outputs):
-    labels = labels.astype(int)
-    targets = np.full((len(labels), n_outputs), -1.0)
-    targets[np.arange(len(labels)), labels] = 1.0
-    return targets
-
-def print_classification_results(predictions, expected_labels):
-    predicted_labels = np.argmax(predictions, axis=1)
-    total = len(expected_labels)
-    if total == 0:
-        print(f"Test set is empty ({DIGITS_TEST_PATH}).")
-        return
-
-    correct = np.sum(predicted_labels == expected_labels)
-    accuracy = correct / total
-
-    with open(EVAL_RESULTS_PATH, "w", encoding="utf-8") as results_file:
-        results_file.write("sample,predicted,expected,match\n")
-        for i, (predicted, expected) in enumerate(zip(predicted_labels, expected_labels)):
-            match = "OK" if predicted == expected else "X"
-            results_file.write(f"{i + 1},{int(predicted)},{int(expected)},{match}\n")
-
-    print(f"\nResults on test set ({total} samples)")
-    print(f"Sample evaluation saved to: {EVAL_RESULTS_PATH}")
-    print(f"Accuracy: {correct}/{total} = {accuracy * 100:.1f}%")
+def parse_arguments():
+    p = argparse.ArgumentParser(description="Train and evaluate an MLP on the digit dataset")
+    p.add_argument("--layers",      type=int,   nargs="+", default=[784, 100, 10])
+    p.add_argument("--lr",          type=float, default=0.01)
+    p.add_argument("--epochs",      type=int,   default=250)
+    p.add_argument("--epsilon",     type=float, default=1e-6)
+    p.add_argument("--seed",        type=int,   default=1)
+    p.add_argument("--activation",  type=str,   default="tanh",   choices=["tanh", "logistic"])
+    p.add_argument("--beta",        type=float, default=1.0)
+    p.add_argument("--initializer", type=str,   default="xavier", choices=["random", "xavier", "xavier_n"])
+    return p.parse_args()
 
 
 def main():
     args = parse_arguments()
-    X_train, train_labels = parse_digits_from_csv(DIGIS_TRAIN_PATH)
-    X_test, test_labels = parse_digits_from_csv(DIGITS_TEST_PATH)
 
-    if args.type_p != "multilayer":
-        raise ValueError("digits_main.py only supports --type_p multilayer")
+    print("Loading data...")
+    X_train, train_labels = load_digits(TRAIN_PATH)
+    X_test,  test_labels  = load_digits(TEST_PATH)
 
-    y_train = encode_digit_targets(train_labels, args.layers[-1])
+    n_classes = args.layers[-1]
+    y_train = encode_one_hot(train_labels, n_classes)
+    y_test  = encode_one_hot(test_labels,  n_classes)
 
-    print(f"Running digit perceptron {args.type_p} with {args.epochs} epochs, learning rate {args.lr}, layers {args.layers}\n")
+    print(f"Training MLP {args.layers} — lr={args.lr}, epochs={args.epochs}, init={args.initializer}\n")
+    mlp = MultiLayerPerceptron(
+        args.layers, args.lr, args.epochs, args.epsilon,
+        args.seed, args.beta, args.activation, args.initializer,
+    )
+    mlp.fit(X_train, y_train, X_val=X_test, y_val=y_test, val_labels=test_labels)
 
-    perceptron = build_perceptron( args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers)
-    perceptron.fit(X_train, y_train)
-    predictions = perceptron.predict(X_test)
+    train_preds = np.argmax(mlp.predict(X_train), axis=1)
+    test_preds  = np.argmax(mlp.predict(X_test),  axis=1)
+    train_acc = np.mean(train_preds == train_labels)
+    test_acc  = np.mean(test_preds  == test_labels)
 
-    print_classification_results(predictions, test_labels)
+    metrics = compute_metrics(test_labels, test_preds, n_classes=n_classes)
+
+    print(f"\nTrain accuracy: {train_acc * 100:.1f}%")
+    print(f"Test accuracy:  {test_acc * 100:.1f}%")
+    print(f"Macro F1:       {metrics['macro_f1'] * 100:.1f}%")
+    print(f"Min class F1:   {metrics['min_class_f1'] * 100:.1f}%")
+
+    train_loss = [e / len(X_train) for e in mlp.errors_]
+    test_loss  = [e / len(X_test)  for e in mlp.val_errors_]
+
+    plot_loss_curve(train_loss, val_errors=test_loss)
+    plot_confusion_matrix(metrics["confusion_matrix"])
+    plot_per_class_metrics(metrics)
 
 
 if __name__ == "__main__":

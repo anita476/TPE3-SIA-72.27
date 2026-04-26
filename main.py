@@ -7,11 +7,7 @@ from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from perceptrons.SimpleLinearPerceptron import SimpleLinearPerceptron
 from perceptrons.SimpleNonLinearPerceptron import SimpleNonLinearPerceptron
 from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
-from datasets.digit_dataset_loader import encode_one_hot
 from utils.test_data_split import test_data_split
-from utils.metrics import compute_metrics
-from utils.visualization import plot_confusion_matrix, plot_loss_curve, plot_per_class_metrics
-
 
 def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random", training_mode="online", batch_size=1):
     if type == "simple-step":
@@ -48,19 +44,10 @@ def parse_arguments()-> argparse.Namespace:
 
 
 def load_data(path: str):
-    from datasets.digit_dataset_loader import load_digits
-    df = pd.read_csv(path, nrows=0)
-    if "image" in df.columns:
-        return load_digits(path)
     df = pd.read_csv(path)
-    return df.drop(columns=["label"]).values, df["label"].values
-
-
-def _encode_if_multiclass(y, type_p, layers):
-    """One-hot encode integer labels for multilayer networks with >1 output."""
-    if type_p == "multilayer" and layers[-1] > 1:
-        return encode_one_hot(y.astype(int), layers[-1])
-    return y
+    X = df.drop(columns=["label"]).values
+    y = df["label"].values
+    return X, y
 
 
 def main():
@@ -73,14 +60,14 @@ def main():
 
     if args.no_split:
         print("Running with no split\n")
-        perceptron.fit(X, _encode_if_multiclass(y, args.type_p, args.layers))
+        perceptron.fit(X, y)
         predictions = perceptron.predict(X)
         y_test = y
     else:
         X_train, X_test, y_train, y_test = test_data_split(
             X, y, test_size=args.test_per, random_state=args.seed
         )
-        perceptron.fit(X_train, _encode_if_multiclass(y_train, args.type_p, args.layers))
+        perceptron.fit(X_train, y_train)
         print(f"Learned weights: {perceptron.weights}")
         bias = getattr(perceptron, "bias", None)
         if bias is None:
@@ -125,21 +112,6 @@ def main():
                 print(f"  sample {i + 1}: predicted={int(pred)}  expected={int(expected)}  {match}")
 
             print(f"\nAccuracy: {correct}/{total} = {accuracy * 100:.1f}%")
-            
-    # Loss curve for any perceptron that tracks training error 
-    errors = getattr(perceptron, "errors_", None)
-    if errors:
-        plot_loss_curve(errors)
-    
-    # Confusion matrix and per-class metrics for multilayer
-    if args.type_p == "multilayer" and predictions.ndim == 2:
-        pred_labels = np.argmax(predictions, axis=1)
-        true_labels = y_test.astype(int)
-        n_classes = predictions.shape[1]
-        metrics = compute_metrics(true_labels, pred_labels, n_classes=n_classes)
-        plot_confusion_matrix(metrics["confusion_matrix"])
-        plot_per_class_metrics(metrics)
-
 
 if __name__ == "__main__":
     main()

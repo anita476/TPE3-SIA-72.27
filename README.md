@@ -14,7 +14,8 @@ Perceptrón Simple y Multicapa. Tercer trabajo práctico para Sistemas de Inteli
 
 | Script | Purpose |
 |--------|---------|
-| `main.py` | Single model: train once, evaluate, save plots |
+| `main.py` | Single model on any flat CSV dataset |
+| `digits_main.py` | Single model on the digit dataset, with full metrics and plots |
 | `experiment_runner_digits.py` | Batch experiments in parallel on the digit dataset |
  
 ---
@@ -104,23 +105,34 @@ XOR (multilayer)
 python main.py --data data/xor_data.csv --type_p multilayer --layers 2 2 1 --lr 0.1 --epochs 500 --no_split --tolerance 0.5
 ```
 
-Multi-class classification
-
-```bash
-python main.py --data datasets/digits.csv --type_p multilayer \
-  --layers 784 10 10 --lr 0.01 --epochs 100 --initializer xavier
-```
- 
 ### Plots saved to `plots/`
 
 - `loss_curve.png` — training loss over epochs (all types except simple-step)
 - `confusion_matrix.png` — predicted vs true class heatmap (multilayer with >1 output)
 - `per_class_metrics.png` — precision, recall, F1 per class (multilayer with >1 output)
 
-### Observations: Cutoff Criteria
+---
 
-If data converges (no errors in a certain epoch), the loop stops even if the number of epochs has not been reached.
+## `digits_main.py`
 
+Dedicated entry point for the digit dataset. Loads from `datasets/digits.csv` and `datasets/digits_test.csv` automatically.
+
+```bash
+python digits_main.py [options]
+```
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--layers` | int... | `784 100 10` | Layer sizes (input → hidden... → output) |
+| `--lr` | float | `0.01` | Learning rate |
+| `--epochs` | int | `250` | Max training epochs |
+| `--epsilon` | float | `1e-6` | Early stopping threshold |
+| `--seed` | int | `1` | Random seed |
+| `--activation` | str | `tanh` | `tanh` or `logistic` |
+| `--beta` | float | `1.0` | Beta scaling for activation |
+| `--initializer` | str | `xavier` | `random`, `xavier`, or `xavier_n` |
+
+Prints train/test accuracy, macro F1, and min class F1. Saves `loss_curve.png` (train + test), `confusion_matrix.png`, and `per_class_metrics.png` to `plots/`.
 
 ---
 

@@ -244,9 +244,13 @@ def plot_confusion_matrix(cm, title="Confusion matrix", filename="confusion_matr
     _save(fig, filename)
 
 
-def plot_loss_curve(errors, title="Training loss", filename="loss_curve.png"):
+def plot_loss_curve(errors, val_errors=None, title="Training loss", filename="loss_curve.png"):
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(range(1, len(errors) + 1), errors)
+    epochs = range(1, len(errors) + 1)
+    ax.plot(epochs, errors, label="Train")
+    if val_errors:
+        ax.plot(range(1, len(val_errors) + 1), val_errors, label="Test")
+        ax.legend()
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title(title)

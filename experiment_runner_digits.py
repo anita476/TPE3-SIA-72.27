@@ -129,18 +129,29 @@ EXPERIMENTS = [
 # ]
 
 
+# EXPERIMENTS = [
+#     # baseline (ya lo tenés, pero incluilo para comparación justa en el mismo run)
+#     {"name": "1L [784,100,10]",       "layers": [784, 100,      10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     # 2 capas — funnel gradual
+#     {"name": "2L [784,100,50,10]",    "layers": [784, 100, 50,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     # 2 capas — funnel más agresivo
+#     {"name": "2L [784,100,30,10]",    "layers": [784, 100, 30,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     # 2 capas — idk
+#     {"name": "2L [784,50,20,10]",    "layers": [784, 50, 20,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+#     # 3 capas — compresión progresiva
+#     {"name": "3L [784,100,50,25,10]", "layers": [784, 100, 50, 25, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+# ]
+
+# --- Step 4: Changing batch sizes ---
 EXPERIMENTS = [
-    # baseline (ya lo tenés, pero incluilo para comparación justa en el mismo run)
-    {"name": "1L [784,100,10]",       "layers": [784, 100,      10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-    # 2 capas — funnel gradual
-    {"name": "2L [784,100,50,10]",    "layers": [784, 100, 50,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-    # 2 capas — funnel más agresivo
-    {"name": "2L [784,100,30,10]",    "layers": [784, 100, 30,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-    # 2 capas — idk
-    {"name": "2L [784,50,20,10]",    "layers": [784, 50, 20,  10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-    # 3 capas — compresión progresiva
-    {"name": "3L [784,100,50,25,10]", "layers": [784, 100, 50, 25, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
+    {"name": "online b=1",    "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online",    "batch_size": 1},
+    {"name": "mini-b b=16",   "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16},
+    {"name": "mini-b b=64",   "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 64},
+    {"name": "mini-b b=256",  "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 256},
+    {"name": "mini-b b=1024", "layers": [784,100,10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "minibatch", "batch_size": 1024},
 ]
+
+
 
 # --- Step 4: Optimizer sweep (best arch=[784,20,10], Adam/RMSProp use smaller lr) ---
 # EXPERIMENTS = [
@@ -225,7 +236,6 @@ def main():
     plot_loss_curves(results)
     plot_accuracy_bars(results)
     plot_convergence(results)
-    plot_confusion_matrices(results)
     plot_confusion_matrices(results)
     plot_per_class_f1(results)
     plot_summary_table(results)
