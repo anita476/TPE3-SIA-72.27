@@ -7,7 +7,9 @@ from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from perceptrons.SimpleLinearPerceptron import SimpleLinearPerceptron
 from perceptrons.SimpleNonLinearPerceptron import SimpleNonLinearPerceptron
 from perceptrons.SimpleStepPerceptron import SimpleStepPerceptron
+from utils.normalizers import standard_scale_apply, standard_scale_params
 from utils.test_data_split import test_data_split
+
 
 def build_perceptron(type, lr, epochs, epsilon, seed, activation='tanh', beta=1.0, layers=None, initializer="random", training_mode="online", batch_size=1, optimizer="sgd"):
     if type == "simple-step":
@@ -42,6 +44,14 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--batch_size", type=int, default=1, help="Mini-batch size for multilayer perceptron when --training_mode minibatch")
     arguments.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "rmsprop", "adam"], help="Optimizer for multilayer perceptron. Default is sgd")
     arguments.add_argument("--label", type=str, default="label",help= "Label column name to drop in data loading")
+    arguments.add_argument(
+        "--normalize",
+        type=str,
+        default="none",
+        choices=["none", "standard"],
+        help="Feature scaling: 'standard' = zero mean / unit variance (fit on train only when split). "
+        "Use on real-world CSVs with mixed feature scales to avoid NaN weights.",
+    )
     return arguments.parse_args()
 
 
@@ -57,11 +67,16 @@ def main():
     print(f"Running perceptron {args.type_p} with {args.epochs} epochs and learning rate of {args.lr}\n")
 
     X, y = load_data(args.data,args.label)
+    X = X.astype(np.float64, copy=False)
 
     perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer, args.training_mode, args.batch_size, args.optimizer)
 
     if args.no_split:
         print("Running with no split\n")
+        if args.normalize == "standard":
+            mean, std = standard_scale_params(X)
+            X = standard_scale_apply(X, mean, std)
+            print("Applied standard scaling (mean/std from full dataset).\n")
         perceptron.fit(X, y)
         predictions = perceptron.predict(X)
         y_test = y
@@ -69,6 +84,11 @@ def main():
         X_train, X_test, y_train, y_test = test_data_split(
             X, y, test_size=args.test_per, random_state=args.seed
         )
+        if args.normalize == "standard":
+            mean, std = standard_scale_params(X_train)
+            X_train = standard_scale_apply(X_train, mean, std)
+            X_test = standard_scale_apply(X_test, mean, std)
+            print("Applied standard scaling (mean/std from training split only).\n")
         perceptron.fit(X_train, y_train)
         print(f"Learned weights: {perceptron.weights}")
         bias = getattr(perceptron, "bias", None)
