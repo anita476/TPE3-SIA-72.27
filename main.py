@@ -41,13 +41,14 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--training_mode", type=str, default="online", choices=["online", "minibatch"], help="Weight update mode for multilayer perceptron. Default is online")
     arguments.add_argument("--batch_size", type=int, default=1, help="Mini-batch size for multilayer perceptron when --training_mode minibatch")
     arguments.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "rmsprop", "adam"], help="Optimizer for multilayer perceptron. Default is sgd")
+    arguments.add_argument("--label", type=str, default="label",help= "Label column name to drop in data loading")
     return arguments.parse_args()
 
 
-def load_data(path: str):
+def load_data(path: str, label_col: str):
     df = pd.read_csv(path)
-    X = df.drop(columns=["label"]).values
-    y = df["label"].values
+    X = df.drop(columns=[label_col]).values
+    y = df[label_col].values
     return X, y
 
 
@@ -55,7 +56,7 @@ def main():
     args = parse_arguments()
     print(f"Running perceptron {args.type_p} with {args.epochs} epochs and learning rate of {args.lr}\n")
 
-    X, y = load_data(args.data)
+    X, y = load_data(args.data,args.label)
 
     perceptron = build_perceptron(args.type_p, args.lr, args.epochs, args.epsilon, args.seed, args.activation, args.beta, args.layers, args.initializer, args.training_mode, args.batch_size, args.optimizer)
 
