@@ -34,7 +34,10 @@ class SimpleLinearPerceptron(Perceptron):
             print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
             if total_error < self.epsilon:
                 print(f"Converged at epoch {epoch + 1}")
+                self.epochs_run_ = epoch + 1
                 break
+        else:
+            self.epochs_run_ = self.epochs
 
 
     def _total_error(self,X, y):
