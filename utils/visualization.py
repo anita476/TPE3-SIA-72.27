@@ -54,7 +54,7 @@ def plot_loss_curves(results):
             if len(runs) > 1:
                 ax.fill_between(xs, mean - std, mean + std, color=color, alpha=0.2)
 
-    for ax, title in [(ax_train, "Train loss"), (ax_test, "Test loss")]:
+    for ax, title in [(ax_train, "Train loss"), (ax_test, "Validation loss")]:
         ax.set_title(title)
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Loss")
@@ -75,7 +75,7 @@ def plot_accuracy_bars(results):
     width = 0.35
     fig, ax = plt.subplots(figsize=(max(8, len(names) * 2), 5))
     ax.bar(x - width / 2, train_means, width, yerr=train_stds, capsize=4, label="Train")
-    ax.bar(x + width / 2, test_means,  width, yerr=test_stds,  capsize=4, label="Test")
+    ax.bar(x + width / 2, test_means,  width, yerr=test_stds,  capsize=4, label="Validation")
     ax.set_ylabel("Accuracy")
     ax.set_title("Train vs test accuracy per experiment (mean ± std across seeds)")
     ax.set_xticks(x)
@@ -111,8 +111,8 @@ def plot_convergence(results):
             ax.fill_between(xs, mean - std, mean + std, color=color, alpha=0.2)
 
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Test accuracy (%)")
-    ax.set_title("Test accuracy over epochs (mean ± std across seeds)")
+    ax.set_ylabel("Validation accuracy (%)")
+    ax.set_title("Validation accuracy over epochs (mean ± std across seeds)")
     ax.legend(fontsize=7)
     fig.tight_layout()
     _save(fig, "convergence.png")
@@ -198,7 +198,7 @@ def plot_perclass_heatmap(results):
 
     std_note = f"Max std across all cells: ±{max_std_overall:.3f}" if max_std_overall > 0 else ""
     fig.suptitle(
-        "Per-class Precision / Recall / F1  (test set)"
+        "Per-class Precision / Recall / F1  (validation set)"
         + (f"\n{std_note}" if std_note else ""),
         fontsize=10
     )
@@ -216,7 +216,7 @@ def print_summary(results):
     """
     groups = _group_results(results)
     header = (
-        f"{'Experiment':<32} {'Train':>12} {'Test':>12} {'Best':>12}"
+        f"{'Experiment':<32} {'Train':>12} {'Val':>12} {'Best':>12}"
         f" {'Gap':>6} {'MacroF1':>8} {'E→80%':>5} {'E→85%':>5}"
     )
     print("\n" + "=" * len(header))
@@ -324,7 +324,7 @@ def plot_loss_curve(errors, val_errors=None, title="Training loss", filename="lo
     epochs = range(1, len(errors) + 1)
     ax.plot(epochs, errors, label="Train")
     if val_errors:
-        ax.plot(range(1, len(val_errors) + 1), val_errors, label="Test")
+        ax.plot(range(1, len(val_errors) + 1), val_errors, label="Validation")
         ax.legend()
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
