@@ -1,3 +1,4 @@
+import json
 import numpy as np
 from utils.initializers import build_initializer
 from utils.optimizers import build_optimizer
@@ -26,7 +27,7 @@ TRAINING_MODES = {"online", "minibatch"}
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd"):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd", weight_decay=0.0, patience=0):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
         if activation not in ACTIVATIONS:
@@ -47,12 +48,16 @@ class MultiLayerPerceptron:
         self.rng = np.random.default_rng(seed)
         self.training_mode = training_mode
         self.batch_size = int(batch_size)
-
+        self.weight_decay = weight_decay
+        self.patience = patience
+        self._optimizer_name = optimizer
         self.optimizer = build_optimizer(optimizer, learning_rate)
         init = build_initializer(initializer)
 
         # One weight matrix per connection between consecutive layers.
-        # Matrix shape: (current_layer_size, previous_layer_size).
+        # Shape: (fan_out, fan_in) so that:
+        #   single sample: h = W @ x
+        #   batch:         H = X @ W.T  (X shape: n × fan_in)
         self.weights = [
             init.init_weights(self.layers[l - 1], self.layers[l], self.rng)
             for l in range(1, len(self.layers))
@@ -64,97 +69,79 @@ class MultiLayerPerceptron:
             for l in range(1, len(self.layers))
         ]
 
-    def _forward(self, x):
-        """Run one sample through the network and keep intermediate values."""
-        # input layer => later entries are layer last after first iteration.
-        activations = [np.asarray(x, dtype=float)]
-        # neuron values before applying the activation function.
+    # ------------------------------------------------------------------
+    # Forward pass
+    # ------------------------------------------------------------------
+
+    def _forward_batch(self, X):
+        """Vectorized forward pass for a batch X of shape (n, fan_in).
+
+        Returns:
+            activations     – list of (n, layer_size) arrays; [0] is the input.
+            pre_activations – list of (n, layer_size) arrays; h values before g().
+        """
+        activations = [np.asarray(X, dtype=float)]
         pre_activations = []
-
         for W, b in zip(self.weights, self.biases):
-            # Weighted sum for the current layer: h= W*a_previous +b.
-            # should work exactly as using the auggmented matrix for the calculation
-            # @ = dot product
-            h = W @ activations[-1] + b
+            h = activations[-1] @ W.T + b   # (n, fan_out)
             pre_activations.append(h)
-
-            # apply activation and send it to the next layer.
             activations.append(self.g(h, self.beta))
-
         return activations, pre_activations
 
-    def _backward(self, activations, pre_activations, y_true):
-        """Compute weight and bias gradients with backpropagation."""
-        # Scalar targets will behave like vectors.
-        y_true = np.asarray(y_true, dtype=float).reshape(-1)
-        L_weights = len(self.weights)
-        L_biases = len(self.biases)
+    def _forward(self, x):
+        """Single-sample forward pass (kept for compute_saliency)."""
+        activations = [np.asarray(x, dtype=float)]
+        pre_activations = []
+        for W, b in zip(self.weights, self.biases):
+            h = W @ activations[-1] + b
+            pre_activations.append(h)
+            activations.append(self.g(h, self.beta))
+        return activations, pre_activations
 
-        # dW and db will store gradients for every weight and bias of the neural network.
-        dW = [None] * L_weights
-        db = [None] * L_biases
-
-        # output layer
-        # (-1)(ζᵢ − Oᵢ) = (activations[-1] - y_true)
-        # θ'(hᵢ) = _tanh_derivative(...)
-        # pre_activations[-1] = h^M
-        delta = (activations[-1]-y_true) * self.g_prime(pre_activations[-1], self.beta)
-        # Weight gradient for a layer is delta outer-product previous activation.
-        # δᵢ​⋅Vⱼ^(M-1)
-        # Vⱼ^(M-1) = activations[-2]
-        dW[-1] = np.outer(delta, activations[-2])
-        db[-1] = delta
-
-        # hidden layers (from last one to first)
-        for l in range(L_weights - 2, -1, -1):
-            # Move the next layer's error backward, then scale by activation slope here.
-            # Delta is from the layer on top
-            # θ'(hⱼ^(l)) evaluated in pre-activación from this layer = pre_activations[l]
-            # ∑ᵢ​δᵢ​Wᵢⱼ = self.weights[l + 1].T @ delta
-            # θ'(hᵢ^m) = _tanh_derivative(pre_activations[l], self.beta)
-            # Vⱼ^(m-1) = activations[l]
-            # δᵢ^m​⋅Vⱼ^(m-1)
-            delta = (self.weights[l + 1].T @ delta) * self.g_prime(pre_activations[l], self.beta)
-            dW[l] = np.outer(delta, activations[l])
-            db[l] = delta
-
-        return dW, db
-
-    def _apply_update(self, dW, db):
-        self.optimizer.update(self.weights, dW, self.biases, db)
-
-    def _zero_gradients(self):
-        return [np.zeros_like(W) for W in self.weights], [np.zeros_like(b) for b in self.biases]
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
 
     def _train_batch_epoch(self, X, y, indices):
         effective_batch_size = 1 if self.training_mode == "online" else self.batch_size
 
         for start in range(0, len(indices), effective_batch_size):
-            batch_indices = indices[start:start + effective_batch_size]
-            batch_dW, batch_db = self._zero_gradients()
+            batch_idx = indices[start:start + effective_batch_size]
+            X_batch = X[batch_idx]   # (n, fan_in)
+            y_batch = y[batch_idx]   # (n, output_size)
+            n = len(batch_idx)
 
-            for i in batch_indices:
-                activations, pre_acts = self._forward(X[i])
-                dW, db = self._backward(activations, pre_acts, y[i])
-                for acc, grad in zip(batch_dW, dW):
-                    acc += grad
-                for acc, grad in zip(batch_db, db):
-                    acc += grad
+            activations, pre_activations = self._forward_batch(X_batch)
 
-            current_batch_size = len(batch_indices)
-            mean_dW = [grad / current_batch_size for grad in batch_dW]
-            mean_db = [grad / current_batch_size for grad in batch_db]
-            self._apply_update(mean_dW, mean_db)
+            # --- Vectorized backward pass ---
+            dW = [None] * len(self.weights)
+            db = [None] * len(self.biases)
+
+            # Output layer: δ = (ŷ − y) ⊙ g'(h),  shape (n, output_size)
+            delta = (activations[-1] - y_batch) * self.g_prime(pre_activations[-1], self.beta)
+            # dW = (1/n) δᵀ A_prev + λW,  shape (fan_out, fan_in) = W shape
+            dW[-1] = delta.T @ activations[-2] / n + self.weight_decay * self.weights[-1]
+            db[-1] = delta.mean(axis=0)
+
+            # Hidden layers: propagate δ backwards
+            for l in range(len(self.weights) - 2, -1, -1):
+                delta = (delta @ self.weights[l + 1]) * self.g_prime(pre_activations[l], self.beta)
+                dW[l] = delta.T @ activations[l] / n + self.weight_decay * self.weights[l]
+                db[l] = delta.mean(axis=0)
+
+            self.optimizer.update(self.weights, dW, self.biases, db)
 
     def train_epoch(self, X, y):
-        n_samples = X.shape[0]
-        indices = self.rng.permutation(n_samples)
+        indices = self.rng.permutation(X.shape[0])
         self._train_batch_epoch(X, y, indices)
 
     def fit(self, X, y, X_val=None, y_val=None, val_labels=None, name=""):
         self.errors_ = []
         self.val_errors_ = []
         self.val_accuracies_ = []
+        best_val_error = float("inf")
+        epochs_no_improve = 0
+
         for epoch in range(self.epochs):
             self.train_epoch(X, y)
 
@@ -170,6 +157,16 @@ class MultiLayerPerceptron:
                     self.val_accuracies_.append(np.mean(val_preds == val_labels))
 
                 print(f"[{name}] Epoch {epoch + 1}: train error = {total_error:.4f}  test error = {val_error:.4f}")
+
+                if self.patience > 0:
+                    if val_error < best_val_error:
+                        best_val_error = val_error
+                        epochs_no_improve = 0
+                    else:
+                        epochs_no_improve += 1
+                    if epochs_no_improve >= self.patience:
+                        print(f"[{name}] Early stopping at epoch {epoch + 1}")
+                        break
             else:
                 print(f"[{name}] Epoch {epoch + 1}: total error = {total_error:.4f}")
 
@@ -177,13 +174,97 @@ class MultiLayerPerceptron:
                 print(f"[{name}] Converged at epoch {epoch + 1}")
                 break
 
-    def predict(self, X):
-        # For each sample, run a forward pass and keep only the final activation.
-        outputs = np.array([self._forward(x)[0][-1] for x in X])
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
 
-        # Single-output networks return a flat vector instead of shape (n, 1).
-        return outputs.flatten() if outputs.shape[1] == 1 else outputs
+    def predict(self, X):
+        """Vectorized predict for a batch X of shape (n, fan_in)."""
+        a = np.asarray(X, dtype=float)
+        for W, b in zip(self.weights, self.biases):
+            a = self.g(a @ W.T + b, self.beta)
+        # Single-output networks: return flat vector instead of (n, 1).
+        return a.flatten() if a.shape[1] == 1 else a
 
     def _total_error(self, X, y):
         predictions = self.predict(X)
         return 0.5 * np.sum((y - predictions) ** 2)
+
+    def compute_saliency(self, x, target_class):
+        """Gradient of output[target_class] w.r.t. each input pixel.
+        Positive value → pixel pushes prediction toward target_class.
+        Negative value → pixel pushes prediction away from target_class.
+        """
+        _, pre_acts = self._forward(x)
+
+        # Treat target_class output as if it were the only signal,
+        # then propagate that signal all the way back to the input.
+        e = np.zeros(self.layers[-1])
+        e[target_class] = 1.0
+        delta = e * self.g_prime(pre_acts[-1], self.beta)
+
+        for l in range(len(self.weights) - 2, -1, -1):
+            delta = (self.weights[l + 1].T @ delta) * self.g_prime(pre_acts[l], self.beta)
+
+        return self.weights[0].T @ delta   # shape (n_inputs,)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, path):
+        """Save weights, biases, and hyperparameters to a .npz file."""
+        config = {
+            "layers":        self.layers,
+            "learning_rate": self.learning_rate,
+            "epochs":        self.epochs,
+            "epsilon":       self.epsilon,
+            "beta":          self.beta,
+            "activation":    self.activation,
+            "training_mode": self.training_mode,
+            "batch_size":    self.batch_size,
+            "weight_decay":  self.weight_decay,
+            "patience":      self.patience,
+            "optimizer":     self._optimizer_name,
+        }
+        arrays = {f"W{i}": W for i, W in enumerate(self.weights)}
+        arrays.update({f"b{i}": b for i, b in enumerate(self.biases)})
+        arrays["_config"] = np.array(json.dumps(config))
+        # Include training history if fit() has been called
+        if hasattr(self, "errors_"):
+            arrays["_train_loss"]  = np.array(self.errors_)
+            arrays["_val_loss"]    = np.array(self.val_errors_)
+            arrays["_val_acc"]     = np.array(self.val_accuracies_)
+        np.savez(path, **arrays)
+        print(f"Model saved → {path}.npz")
+
+    @classmethod
+    def load(cls, path, seed=0):
+        """Load a model from a .npz file produced by save()."""
+        p = path if path.endswith(".npz") else path + ".npz"
+        data = np.load(p, allow_pickle=True)
+        config = json.loads(str(data["_config"]))
+        model = cls(
+            layers=config["layers"],
+            learning_rate=config["learning_rate"],
+            epochs=config["epochs"],
+            epsilon=config["epsilon"],
+            seed=seed,
+            beta=config["beta"],
+            activation=config["activation"],
+            training_mode=config.get("training_mode", "online"),
+            batch_size=config.get("batch_size", 1),
+            optimizer=config.get("optimizer", "sgd"),
+            weight_decay=config.get("weight_decay", 0.0),
+            patience=config.get("patience", 0),
+        )
+        n = len(config["layers"]) - 1
+        model.weights = [data[f"W{i}"] for i in range(n)]
+        model.biases  = [data[f"b{i}"] for i in range(n)]
+        # Restore training history if present
+        if "_train_loss" in data:
+            model.errors_          = data["_train_loss"].tolist()
+            model.val_errors_      = data["_val_loss"].tolist()
+            model.val_accuracies_  = data["_val_acc"].tolist()
+        print(f"Model loaded ← {p}")
+        return model

@@ -57,54 +57,21 @@ def epochs_to_threshold(val_accuracies, threshold):
     return None
 
 
-def save_results_csvs(results, summary_csv, curves_csv, perclass_csv):
-    """Append experiment results to three CSV files (summary, per-epoch curves, per-class metrics)."""
-    os.makedirs(os.path.dirname(summary_csv), exist_ok=True)
-
-    summary_rows  = []
-    curve_rows    = []
-    perclass_rows = []
-
+def save_perclass_csv(results, perclass_csv):
+    """Append per-class precision/recall/F1 for every experiment to a CSV."""
+    os.makedirs(os.path.dirname(perclass_csv), exist_ok=True)
+    rows = []
     for r in results:
-        cfg = r["config"]
+        cfg  = r["config"]
         base = {
-            "name":              r["name"],
-            "layers":            str(cfg["layers"]),
-            "lr":                cfg["lr"],
-            "epochs_configured": cfg["epochs"],
-            "initializer":       cfg.get("initializer", "random"),
-            "beta":              cfg.get("beta", 1.0),
+            "name":        r["name"],
+            "layers":      str(cfg.get("layers", "")),
+            "lr":          cfg.get("lr", ""),
+            "initializer": cfg.get("initializer", "random"),
         }
-        tm = r["test_metrics"]
-        summary_rows.append({
-            **base,
-            "train_acc":        round(r["train_acc"],        4),
-            "test_acc":         round(r["test_acc"],         4),
-            "best_test_acc":    round(r["best_test_acc"],    4),
-            "best_epoch":       r["best_epoch"],
-            "gap":              round(r["gap"],              4),
-            "macro_precision":  round(tm["macro_precision"], 4),
-            "macro_recall":     round(tm["macro_recall"],    4),
-            "macro_f1":         round(tm["macro_f1"],        4),
-            "min_class_f1":     round(tm["min_class_f1"],    4),
-            "epochs_to_80":     r["epochs_to_80"],
-            "epochs_to_85":     r["epochs_to_85"],
-            "final_train_loss": round(r["final_train_loss"], 6) if r["final_train_loss"] else None,
-            "final_test_loss":  round(r["final_test_loss"],  6) if r["final_test_loss"]  else None,
-        })
-        for epoch, (trl, tel, acc) in enumerate(
-            zip(r["train_loss"], r["test_loss"], r["test_acc_per_epoch"]), start=1
-        ):
-            curve_rows.append({
-                **base,
-                "epoch":      epoch,
-                "train_loss": round(trl, 6),
-                "test_loss":  round(tel, 6),
-                "test_acc":   round(acc, 4),
-            })
-        for split, metrics in [("train", r["train_metrics"]), ("test", tm)]:
+        for split, metrics in [("train", r["train_metrics"]), ("test", r["test_metrics"])]:
             for k in range(len(metrics["f1"])):
-                perclass_rows.append({
+                rows.append({
                     **base,
                     "set":       split,
                     "class":     k,
@@ -113,8 +80,5 @@ def save_results_csvs(results, summary_csv, curves_csv, perclass_csv):
                     "f1":        round(metrics["f1"][k],        4),
                     "support":   int(metrics["support"][k]),
                 })
-
-    pd.DataFrame(summary_rows).to_csv(summary_csv,  mode="a", header=not os.path.exists(summary_csv),  index=False)
-    pd.DataFrame(curve_rows).to_csv(curves_csv,      mode="a", header=not os.path.exists(curves_csv),   index=False)
-    pd.DataFrame(perclass_rows).to_csv(perclass_csv, mode="a", header=not os.path.exists(perclass_csv), index=False)
-    print(f"Results saved to {os.path.dirname(summary_csv)}/")
+    pd.DataFrame(rows).to_csv(perclass_csv, mode="a", header=not os.path.exists(perclass_csv), index=False)
+    print(f"Per-class metrics saved → {perclass_csv}")

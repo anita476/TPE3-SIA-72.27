@@ -1,23 +1,30 @@
 import os
+import re
+import json
+import argparse
 import numpy as np
 import multiprocessing as mp
 from datasets.digit_dataset_loader import load_digits, encode_one_hot
+from utils.test_data_split import stratified_split
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
-from utils.metrics import compute_metrics, epochs_to_threshold, save_results_csvs
+from utils.metrics import compute_metrics, epochs_to_threshold, save_perclass_csv
 from utils.visualization import (
-    print_summary,
+    print_summary, print_perclass_summary,
     plot_loss_curves, plot_accuracy_bars, plot_convergence,
-    plot_confusion_matrices, plot_per_class_f1, plot_summary_table,
+    plot_confusion_matrices, plot_perclass_heatmap,
 )
 
 RESULTS_DIR   = "results"
-SUMMARY_CSV   = os.path.join(RESULTS_DIR, "summary.csv")
-CURVES_CSV    = os.path.join(RESULTS_DIR, "curves.csv")
+MODELS_DIR    = os.path.join(RESULTS_DIR, "models")
 PERCLASS_CSV  = os.path.join(RESULTS_DIR, "per_class.csv")
 
 TRAIN_PATH = "datasets/digits.csv"
 TEST_PATH  = "datasets/digits_test.csv"
 SEED       = 1
+
+# Hardcoded experiments used when --config is not passed.
+# Uncomment / edit entries here, or supply a JSON file via --config.
+EXPERIMENTS = []
 
 # --- Step 1: LR sweep ---
 # EXPERIMENTS = [
@@ -58,7 +65,7 @@ SEED       = 1
 # [784,100,10]                        67.2%      57.9%
 
 # --- Step 3: Initialization sweep ---
-EXPERIMENTS = [
+# EXPERIMENTS = [
     # {"name": "random [784,20,10]",  "layers": [784,  20, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "random"},
     # {"name": "xavier [784,20,10]",  "layers": [784,  20, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
     # {"name": "random [784,100,10]", "layers": [784, 100, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "random"},
@@ -66,7 +73,7 @@ EXPERIMENTS = [
     # {"name": "xavier lr=0.01 [784,100,10]",  "layers": [784,  100, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
     # {"name": "xavier lr=0.01 [784,50,10]",  "layers": [784,  50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
     # {"name": "xavier lr=0.1 [784,20,10]",  "layers": [784,  20, 10], "lr": 0.01, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier"},
-]
+# ]
 # Results (500 epochs, LR=0.1)
 # Experiment                         Train    Test    Best  BEpoch    Gap  E→80%  E→85%
 # =====================================================================================
@@ -158,35 +165,58 @@ EXPERIMENTS = [
 # =====================================================================================================
 
 
-EXPERIMENTS = [
-    # SGD — known best
-    {"name": "sgd     lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "sgd"},
-
-    # Adam — paper recommends 0.001; try 0.01 too to see what happens
-    {"name": "adam    lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
-    {"name": "adam    lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
-    {"name": "adam    lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
-
-    # RMSProp — adaptive like Adam but no momentum; usually needs smaller LR
-    {"name": "rmsprop lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
-    {"name": "rmsprop lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
-    {"name": "rmsprop lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
-]
-
-# --- Step 4: Optimizer sweep (best arch=[784,20,10], Adam/RMSProp use smaller lr) ---
 # EXPERIMENTS = [
-#     {"name": "sgd     lr=0.1  [784,20,10]", "layers": [784, 20, 10], "lr": 0.1,   "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "optimizer": "sgd"},
-#     {"name": "rmsprop lr=0.01 [784,20,10]", "layers": [784, 20, 10], "lr": 0.01,  "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "optimizer": "rmsprop"},
-#     {"name": "adam    lr=0.01 [784,20,10]", "layers": [784, 20, 10], "lr": 0.01,  "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "optimizer": "adam"},
-#     {"name": "adam    lr=0.001[784,20,10]", "layers": [784, 20, 10], "lr": 0.001, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "optimizer": "adam"},
+#     # SGD — known best
+#     {"name": "sgd     lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "sgd"},
+
+#     # Adam — paper recommends 0.001; try 0.01 too to see what happens
+#     {"name": "adam    lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+#     {"name": "adam    lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+#     {"name": "adam    lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+
+#     # RMSProp — adaptive like Adam but no momentum; usually needs smaller LR
+#     {"name": "rmsprop lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+#     {"name": "rmsprop lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+#     {"name": "rmsprop lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
 # ]
+
+# Experiment                         Train    Test    Best  BEpoch    Gap  MacroF1  MinF1  E→80%  E→85%
+# =====================================================================================================
+# adam    lr=0.0001                  99.9%   86.9%   87.2%      86  13.0pp    82.2%   0.0%      1      5
+# adam    lr=0.001                   99.8%   86.4%   87.0%     170  13.4pp    81.8%   0.0%      1      4
+# adam    lr=0.01                    37.2%   39.6%   39.9%     239  -2.4pp    30.9%   0.0%      -      -
+# rmsprop lr=0.0001                  98.6%   85.9%   86.2%     236  12.7pp    81.2%   0.0%      5     30
+# rmsprop lr=0.001                   99.7%   86.1%   86.4%      37  13.6pp    81.4%   0.0%      1      6
+# rmsprop lr=0.01                    99.4%   86.3%   87.1%      73  13.1pp    83.5%  26.1%      1      7
+# sgd     lr=0.01                    99.7%   86.8%   87.0%     245  12.8pp    82.1%   0.0%      1      4
+
+
+
+# 1. Aumentar capacidad. Pasá de [784, 100, 10] a [784, 256, 10] o [784, 128, 64, 10]. Mantené todo lo demás igual. Esto típicamente te da el mayor salto inicial.
+
+# EXPERIMENTS = [
+    # SGD — known best
+    # {"name": "sgd  [784, 300, 100, 10]  lr=0.01",  "layers": [784,300, 100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "sgd"},
+    # {"name": "sgd  [784, 500, 150, 10]  lr=0.01",  "layers": [784,500, 150,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "sgd"},
+
+    # # Adam — paper recommends 0.001; try 0.01 too to see what happens
+    # {"name": "adam    lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+    # {"name": "adam    lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+    # {"name": "adam    lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "adam"},
+
+    # # RMSProp — adaptive like Adam but no momentum; usually needs smaller LR
+    # {"name": "rmsprop lr=0.001", "layers": [784,100,10], "lr": 0.001,  "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+    # {"name": "rmsprop lr=0.01",  "layers": [784,100,10], "lr": 0.01,   "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+    # {"name": "rmsprop lr=0.0001","layers": [784,100,10], "lr": 0.0001, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "initializer": "xavier", "training_mode": "online", "optimizer": "rmsprop"},
+# ]
+
 
 
 def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_labels):
     print(f"\n--- {config['name']} ---")
     mlp = MultiLayerPerceptron(
         config["layers"], config["lr"], config["epochs"],
-        config["epsilon"], SEED, config["beta"],
+        config["epsilon"], config.get("seed", SEED), config["beta"],
         initializer=config.get("initializer", "random"),
         training_mode=config.get("training_mode", "online"),
         batch_size=config.get("batch_size", 1),
@@ -213,6 +243,10 @@ def run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_
           f"  |  Best: {best_test_acc * 100:.1f}% @ epoch {best_epoch}"
           f"  |  Macro F1: {test_metrics['macro_f1'] * 100:.1f}%")
 
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    safe_name = re.sub(r"[^\w\-]", "_", config["name"])
+    mlp.save(os.path.join(MODELS_DIR, safe_name))
+
     return {
         "name":             config["name"],
         "config":           config,
@@ -237,29 +271,71 @@ def _worker(args):
     return run_experiment(config, X_train, y_train, train_labels, X_test, y_test, test_labels)
 
 
+def _parse_args():
+    p = argparse.ArgumentParser(description="Run digit MLP experiments")
+    p.add_argument("--config", type=str, default=None,
+                   help="Path to a JSON file containing a list of experiment configs. "
+                        "If omitted, the hardcoded EXPERIMENTS list is used.")
+    return p.parse_args()
+
+
 def main():
+    cli = _parse_args()
+    if cli.config:
+        with open(cli.config) as f:
+            experiments = json.load(f)
+        print(f"Loaded {len(experiments)} experiments from {cli.config}")
+    else:
+        experiments = EXPERIMENTS
+
+    if not experiments:
+        print("No experiments to run. Add entries to EXPERIMENTS or pass --config <file.json>.")
+        return
+
     print("Loading data...")
-    X_train, train_labels = load_digits(TRAIN_PATH)
-    X_test,  test_labels  = load_digits(TEST_PATH)
+    X_all, all_labels = load_digits(TRAIN_PATH)
+
+    # Split digits.csv into train (80%) + val (20%) for hyperparameter selection.
+    # Stratified so every class keeps its proportion in both halves.
+    X_train, X_val, train_labels, val_labels = stratified_split(
+        X_all, all_labels, val_size=0.2, random_state=SEED
+    )
     y_train = encode_one_hot(train_labels, 10)
-    y_test  = encode_one_hot(test_labels,  10)
+    y_val   = encode_one_hot(val_labels,   10)
 
-    args = [(c, X_train, y_train, train_labels, X_test, y_test, test_labels) for c in EXPERIMENTS]
+    print(f"  train split: {len(X_train)} samples  |  val split: {len(X_val)} samples")
 
-    n_workers = min(len(EXPERIMENTS), mp.cpu_count())
-    print(f"Running {len(EXPERIMENTS)} experiments on {n_workers} CPU cores in parallel...")
+    # --- Hyperparameter sweep (val set only, digits_test.csv not touched) ---
+    args = [(c, X_train, y_train, train_labels, X_val, y_val, val_labels) for c in experiments]
+
+    n_workers = min(len(experiments), mp.cpu_count())
+    print(f"Running {len(experiments)} experiments on {n_workers} CPU cores in parallel...")
     with mp.Pool(n_workers) as pool:
         results = pool.map(_worker, args)
 
     results.sort(key=lambda r: r["name"])
+    print("\n=== HYPERPARAMETER SWEEP (val set) ===")
     print_summary(results)
-    save_results_csvs(results, SUMMARY_CSV, CURVES_CSV, PERCLASS_CSV)
+    print_perclass_summary(results)
+    save_perclass_csv(results, PERCLASS_CSV)
     plot_loss_curves(results)
     plot_accuracy_bars(results)
     plot_convergence(results)
     plot_confusion_matrices(results)
-    plot_per_class_f1(results)
-    plot_summary_table(results)
+    plot_perclass_heatmap(results)
+
+    # --- Final evaluation: retrain best config on full digits.csv, evaluate on digits_test.csv ---
+    best = max(results, key=lambda r: r["best_test_acc"])
+    print(f"\n=== FINAL EVALUATION ===")
+    print(f"Best config by val accuracy: {best['name']}")
+
+    X_test, test_labels = load_digits(TEST_PATH)
+    y_full = encode_one_hot(all_labels, 10)
+    y_test = encode_one_hot(test_labels, 10)
+
+    final = run_experiment(best["config"], X_all, y_full, all_labels, X_test, y_test, test_labels)
+    print(f"Final test accuracy (digits_test.csv): {final['test_acc'] * 100:.1f}%"
+          f"  |  Macro F1: {final['test_metrics']['macro_f1'] * 100:.1f}%")
 
 
 if __name__ == "__main__":

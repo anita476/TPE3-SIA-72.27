@@ -215,3 +215,5 @@ plots/
 
 /.idea
 *.csv
+results/models
+utils/visualization.py
