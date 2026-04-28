@@ -14,9 +14,17 @@ def _logistic(h, beta=1.0):
 def _logistic_derivative(g_h, beta=1.0):
     return 2 * beta * g_h * (1 - g_h)
 
+def _relu(h, beta=1.0):
+    return np.maximum(0.0, h)
+
+def _relu_derivative(g_h, beta=1.0):
+    # g_h = relu(h): derivative is 1 where g_h > 0, 0 otherwise
+    return (g_h > 0).astype(float)
+
 ACTIVATIONS = {
-    'tanh': (_tanh, _tanh_derivative),       # output in [-1, 1]
-    'logistic': (_logistic, _logistic_derivative),  # output in [0, 1]
+    'tanh':     (_tanh,     _tanh_derivative),      # output range [-1, 1]
+    'logistic': (_logistic, _logistic_derivative),  # output range [0, 1]
+    'relu':     (_relu,     _relu_derivative),      # output range [0, +inf)
 }
 
 
@@ -40,6 +48,7 @@ class SimpleNonLinearPerceptron(Perceptron):
     def fit(self, X, y):
         n_samples, n_features = X.shape
         self._initialize_parameters(n_features)
+        self.train_mse_history_: list[float] = []
 
         for epoch in range(self.epochs):
             indices = self.rng.permutation(n_samples)
@@ -47,13 +56,14 @@ class SimpleNonLinearPerceptron(Perceptron):
                 x_i = X[i]
                 y_i = y[i]
 
-                prediction = self._predict_single(x_i)          # g(h), computed once
+                prediction = self._predict_single(x_i)  # g(h), computed once and reused in delta
                 error = y_i - prediction
-                delta = error * self.g_prime(prediction, self.beta)  # reuses g(h)
+                delta = error * self.g_prime(prediction, self.beta)
                 self.weights += self.learning_rate * delta * x_i
                 self.bias += self.learning_rate * delta
 
             total_error = self._total_error(X, y)
+            self.train_mse_history_.append(total_error / n_samples)
             print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
             if total_error < self.epsilon:
                 print(f"Converged at epoch {epoch + 1}")

@@ -35,7 +35,7 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--tolerance", type=float, default=0.5, help="Tolerance for interpreting predictions as correct (for linear and non-linear perceptrons). Default is 0.5")
     arguments.add_argument("--test_per", type=float, default=0.2, help="Fraction for test split in decimals (for example 0.2 = 20%%)")
     arguments.add_argument("--seed", type=int, default=1, help="Random seed")
-    arguments.add_argument("--activation", type=str, default="tanh", choices=["tanh", "logistic"], help="Activation function for non-linear and multilayer perceptrons. Default is tanh")
+    arguments.add_argument("--activation", type=str, default="tanh", choices=["tanh", "logistic", "relu"], help="Activation function for non-linear and multilayer perceptrons. Default is tanh")
     arguments.add_argument("--beta", type=float, default=1.0, help="Beta scaling parameter for non-linear perceptron. Default is 1.0")
     arguments.add_argument("--no_split", action="store_true", help="Skip train/test split, evaluate on full dataset")
     arguments.add_argument("--layers", type=int, nargs="+", default=[2, 2, 1], help="Layer sizes for multilayer perceptron (e.g. --layers 2 2 1)")

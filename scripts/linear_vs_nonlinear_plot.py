@@ -51,48 +51,82 @@ OPTIONAL_METRIC_COLUMNS = (
     "final_train_mse",
     "epochs_completed",
     "elapsed_seconds",
+    # dataset stats
+    "fraud_rate_train",
+    "fraud_rate_test",
+    # binary fraud metrics — test set
+    "roc_auc",
+    "best_f1",
+    "best_precision",
+    "best_recall",
+    "best_threshold",
+    "f1_at_half",
+    "precision_at_half",
+    "recall_at_half",
+    # binary fraud metrics — train set (for overfitting diagnosis)
+    "train_roc_auc",
+    "train_f1_at_half",
+    "train_precision_at_half",
+    "train_recall_at_half",
 )
 DERIVED_METRIC_COLUMNS = ("rmse", "test_acc_per_second")
 INTEGER_METRICS = frozenset({"epochs_completed", "confusion_bins_config", "seed"})
 
-METRIC_YLABEL_ES: dict[str, str] = {
-    "test_acc": "Precisión en test (tolerancia)",
-    "train_acc": "Precisión en entrenamiento",
-    "mae": "Error absoluto medio (test)",
-    "mse": "Error cuadrático medio (test)",
-    "rmse": "Raíz del error cuadrático medio (test)",
-    "final_train_mse": "Error cuadrático medio final (entrenamiento)",
-    "epochs_completed": "Épocas ejecutadas",
-    "elapsed_seconds": "Tiempo de entrenamiento (s)",
-    "test_acc_per_second": "Precisión test por segundo (1/s)",
+METRIC_YLABEL: dict[str, str] = {
+    "test_acc":               "Test accuracy (tolerance)",
+    "train_acc":              "Train accuracy (tolerance)",
+    "mae":                    "Mean absolute error (test)",
+    "mse":                    "Mean squared error (test)",
+    "rmse":                   "Root mean squared error (test)",
+    "final_train_mse":        "Final MSE (train)",
+    "epochs_completed":       "Epochs completed",
+    "elapsed_seconds":        "Training time (s)",
+    "test_acc_per_second":    "Test accuracy per second (1/s)",
+    # dataset stats
+    "fraud_rate_train":       "Fraud rate (train set)",
+    "fraud_rate_test":        "Fraud rate (test set)",
+    # binary metrics — test
+    "roc_auc":                "ROC-AUC (test)",
+    "best_f1":                "Best F1 (test, optimal threshold)",
+    "best_precision":         "Precision at optimal threshold (test)",
+    "best_recall":            "Recall at optimal threshold (test)",
+    "best_threshold":         "Optimal threshold (max F1)",
+    "f1_at_half":             "F1 at threshold=0.5 (test)",
+    "precision_at_half":      "Precision at threshold=0.5 (test)",
+    "recall_at_half":         "Recall at threshold=0.5 (test)",
+    # binary metrics — train (overfitting diagnosis)
+    "train_roc_auc":          "ROC-AUC (train)",
+    "train_f1_at_half":       "F1 at threshold=0.5 (train)",
+    "train_precision_at_half": "Precision at threshold=0.5 (train)",
+    "train_recall_at_half":   "Recall at threshold=0.5 (train)",
 }
 
-PARAM_LABEL_ES: dict[str, str] = {
-    "name": "Experimento",
-    "data": "Dataset",
-    "model_type": "Tipo de modelo",
-    "lr": "Tasa de aprendizaje",
-    "epochs": "Épocas (máx.)",
-    "epsilon": "Epsilon (parada)",
-    "tolerance": "Tolerancia",
-    "activation": "Activación",
-    "beta": "Beta",
-    "test_per": "Fracción test",
-    "normalize": "Normalización",
-    "no_split": "Sin split",
-    "seed": "Semilla",
-    "confusion_mode": "Modo matriz de confusión",
-    "confusion_bins_config": "Cantidad de bines",
-    "run_id": "ID de corrida",
+PARAM_LABEL: dict[str, str] = {
+    "name":                  "Experiment",
+    "data":                  "Dataset",
+    "model_type":            "Model type",
+    "lr":                    "Learning rate",
+    "epochs":                "Epochs (max)",
+    "epsilon":               "Epsilon (stop threshold)",
+    "tolerance":             "Tolerance",
+    "activation":            "Activation",
+    "beta":                  "Beta",
+    "test_per":              "Test fraction",
+    "normalize":             "Normalisation",
+    "no_split":              "No split (full dataset)",
+    "seed":                  "Seed",
+    "confusion_mode":        "Confusion matrix mode",
+    "confusion_bins_config": "Number of bins",
+    "run_id":                "Run ID",
 }
 
 
-def metric_ylabel_es(metric: str) -> str:
-    return METRIC_YLABEL_ES.get(metric, metric.replace("_", " "))
+def metric_ylabel(metric: str) -> str:
+    return METRIC_YLABEL.get(metric, metric.replace("_", " "))
 
 
-def param_xlabel_es(param: str) -> str:
-    return PARAM_LABEL_ES.get(param, param.replace("_", " "))
+def param_xlabel(param: str) -> str:
+    return PARAM_LABEL.get(param, param.replace("_", " "))
 
 
 def _safe_filename_part(s: str) -> str:
@@ -232,7 +266,7 @@ def all_param_columns(fieldnames: list[str]) -> list[str]:
 
 
 def param_columns_default(fieldnames: list[str]) -> list[str]:
-    """Excluye run_id del eje X por defecto (una categoría por corrida)."""
+    """Exclude run_id from the default X-axis columns (one category per run)."""
     return [c for c in all_param_columns(fieldnames) if c not in SKIP_DEFAULT_PARAMS]
 
 
@@ -755,14 +789,14 @@ def build_title_linear_vs_nonlinear(
     label_b: str | None = None,
     n_labels: int = 0,
 ) -> str:
-    ylabel = metric_ylabel_es(metric)
+    ylabel = metric_ylabel(metric)
     if n_labels == 1 and label_a is not None:
         body = f"{label_a} — {ylabel}"
     elif label_a is not None and label_b is not None:
         body = f"{label_a} vs. {label_b} — {ylabel}"
     else:
-        body = f"Por {param_xlabel_es(param).lower()} — {ylabel}"
-    return f"Lineal vs no lineal: {body}"
+        body = f"By {param_xlabel(param).lower()} — {ylabel}"
+    return f"Linear vs non-linear: {body}"
 
 
 def run_compare_from_summary(
@@ -821,11 +855,11 @@ def run_compare_from_summary(
                     )
 
             n_groups = len(labels)
-            ylabel = metric_ylabel_es(metric)
+            ylabel = metric_ylabel(metric)
 
             title_suffix = ""
             if drop_outliers == "iqr" and dropped_points:
-                title_suffix = "\n(valores extremos excluidos: IQR)"
+                title_suffix = "\n(outliers removed: IQR)"
 
             if n_groups == 1:
                 xlabel = None
@@ -842,7 +876,7 @@ def run_compare_from_summary(
                     + title_suffix
                 )
             else:
-                xlabel = param_xlabel_es(param)
+                xlabel = param_xlabel(param)
                 title = (
                     build_title_linear_vs_nonlinear(
                         param, metric, n_labels=n_groups
@@ -1139,7 +1173,7 @@ def run_confusion_figures(
             mats.append((mt, cm))
             mode = meta.get("mode", "?")
             nb = meta.get("n_bins", "")
-            metas.append(f"{mode}" + (f", bines={nb}" if nb != "" else ""))
+            metas.append(f"{mode}" + (f", bins={nb}" if nb != "" else ""))
 
         if len(mats) < 1:
             continue
@@ -1162,7 +1196,7 @@ def run_confusion_figures(
         ]
         sub_title = " · ".join(extra_bits) if extra_bits else ""
         title = (
-            f"Lineal vs no lineal — Matriz de confusión (test): {name} · {data_bn}"
+            f"Linear vs non-linear — Confusion matrix (test): {name} · {data_bn}"
             + (f"\n{sub_title}" if sub_title else "")
         )
 
@@ -1253,6 +1287,298 @@ def _add_compare_parser(sub) -> argparse.ArgumentParser:
     return p
 
 
+# ---------------------------------------------------------------------------
+# Subcommand: curves  (per-epoch learning curves)
+# ---------------------------------------------------------------------------
+
+_CURVES_MODEL_COLORS = {"linear": "#4a90d9", "non-linear": "#e67e22"}
+_CURVES_DEFAULT_COLS = ["name", "activation", "lr", "test_per"]
+
+
+def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
+    if window <= 1:
+        return arr
+    kernel = np.ones(window) / window
+    return np.convolve(arr, kernel, mode="valid")
+
+
+def run_curves_figures(
+    curves_csv: Path,
+    out_dir: Path,
+    filters: dict[str, list[str]] | None = None,
+    group_by: list[str] | None = None,
+    smooth: int = 0,
+) -> list[Path]:
+    """Generate one learning-curve figure per combination of `group_by` columns."""
+    if not curves_csv.is_file():
+        raise SystemExit(f"Curves CSV not found: {curves_csv}")
+
+    df = pd.read_csv(curves_csv)
+    if df.empty:
+        print("Curves CSV is empty.")
+        return []
+
+    if filters:
+        for k, vals in filters.items():
+            if k in df.columns:
+                df = df[df[k].astype(str).isin([str(v) for v in vals])]
+    if df.empty:
+        print("No data after applying filters.")
+        return []
+
+    group_cols = group_by or [c for c in _CURVES_DEFAULT_COLS if c in df.columns]
+    group_cols = [c for c in group_cols if c in df.columns]
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    groups = df.groupby(group_cols, dropna=False) if group_cols else [(("all",), df)]
+    for key, gdf in groups:
+        key_str = "_".join(str(k) for k in (key if isinstance(key, tuple) else (key,)))
+
+        with plt.rc_context(PLOT_RC):
+            fig, ax = plt.subplots(figsize=FIG_SIZE, dpi=FIG_DPI)
+        fig.patch.set_facecolor(STYLE["figure_bg"])
+        ax.set_facecolor(STYLE["axes_bg"])
+        ax.grid(True, color=STYLE["grid"], linewidth=0.6, zorder=0)
+        ax.set_axisbelow(True)
+
+        any_plotted = False
+        for model_type, color in _CURVES_MODEL_COLORS.items():
+            sub = gdf[gdf["model_type"] == model_type]
+            if sub.empty:
+                continue
+
+            # Promediar sobre semillas: interpolar a la longitud más corta
+            seed_curves: list[np.ndarray] = []
+            for _, seed_df in sub.groupby("seed", dropna=False):
+                arr = seed_df.sort_values("epoch")["train_mse"].to_numpy(dtype=float)
+                if len(arr) > 0:
+                    seed_curves.append(arr)
+
+            if not seed_curves:
+                continue
+
+            min_len = min(len(c) for c in seed_curves)
+            mat = np.array([c[:min_len] for c in seed_curves])
+            mean = mat.mean(axis=0)
+            std  = mat.std(axis=0)
+            xs   = np.arange(1, min_len + 1)
+
+            if smooth > 1:
+                mean = _moving_average(mean, smooth)
+                std  = _moving_average(std,  smooth)
+                xs   = xs[:len(mean)]
+
+            label = f"{model_type} (n={len(seed_curves)} seeds)"
+            ax.plot(xs, mean, color=color, linewidth=1.8, label=label, zorder=3)
+            if len(seed_curves) > 1:
+                ax.fill_between(
+                    xs, mean - std, mean + std,
+                    color=color, alpha=0.18, zorder=2,
+                )
+            any_plotted = True
+
+        if not any_plotted:
+            plt.close(fig)
+            continue
+
+        title_parts = [f"{c}={k}" for c, k in zip(group_cols, key if isinstance(key, tuple) else (key,))]
+        title = "Learning curves — " + ", ".join(title_parts)
+        ax.set_title(title, color=STYLE["text_title"], pad=8)
+        ax.set_xlabel("Epoch", color=STYLE["text_axis"])
+        ax.set_ylabel("Train MSE (mean ± std over seeds)", color=STYLE["text_axis"])
+        ax.tick_params(colors=STYLE["text_axis"])
+        ax.legend(fontsize=9)
+        fig.tight_layout(pad=1.5)
+
+        safe_key = re.sub(r"[^\w.\-]+", "_", key_str).strip("_") or "group"
+        dest = out_dir / f"curves_{safe_key}.png"
+        save_figure(fig, dest)
+        plt.close(fig)
+        written.append(dest)
+        print(f"Saved: {dest}")
+
+    return written
+
+
+def _add_curves_parser(sub) -> argparse.ArgumentParser:
+    p = sub.add_parser(
+        "curves",
+        help="Learning curves (MSE per epoch) from linear_vs_nonlinear_curves.csv.",
+    )
+    p.add_argument(
+        "--curves-csv",
+        type=Path,
+        default=ROOT / "results" / "linear_vs_nonlinear_curves.csv",
+        help="Path to curves CSV (default: results/linear_vs_nonlinear_curves.csv)",
+    )
+    p.add_argument("--out", type=Path, required=True, help="Output directory for PNGs")
+    p.add_argument(
+        "--filter",
+        action="append",
+        dest="filters",
+        metavar="KEY=VALUE",
+        type=_parse_filter,
+        help="Filter rows, e.g. --filter activation=logistic --filter no_split=True",
+    )
+    p.add_argument(
+        "--group-by",
+        action="append",
+        dest="group_by",
+        metavar="COL",
+        help="Grouping columns (repeat for multiple). Default: name activation lr test_per",
+    )
+    p.add_argument(
+        "--smooth",
+        type=int,
+        default=0,
+        metavar="W",
+        help="Moving-average window for curve smoothing (0 = no smoothing).",
+    )
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: roc  (ROC curves and threshold analysis)
+# ---------------------------------------------------------------------------
+
+_ROC_GROUP_COLS = ["name", "activation", "lr", "test_per"]
+
+
+def run_roc_figures(
+    roc_csv: Path,
+    out_dir: Path,
+    filters: dict[str, list[str]] | None = None,
+    group_by: list[str] | None = None,
+) -> list[Path]:
+    """Generate ROC curves averaged over seeds, one figure per group."""
+    if not roc_csv.is_file():
+        raise SystemExit(f"ROC CSV not found: {roc_csv}")
+
+    df = pd.read_csv(roc_csv)
+    if df.empty:
+        print("ROC CSV is empty.")
+        return []
+
+    if filters:
+        for k, vals in filters.items():
+            if k in df.columns:
+                df = df[df[k].astype(str).isin([str(v) for v in vals])]
+    if df.empty:
+        print("No data after applying filters.")
+        return []
+
+    group_cols = group_by or [c for c in _ROC_GROUP_COLS if c in df.columns]
+    group_cols = [c for c in group_cols if c in df.columns]
+
+    # Grid de FPR común para interpolar y promediar curvas entre semillas
+    fpr_grid = np.linspace(0.0, 1.0, 300)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    groups = df.groupby(group_cols, dropna=False) if group_cols else [(("all",), df)]
+    for key, gdf in groups:
+        key_str = "_".join(str(k) for k in (key if isinstance(key, tuple) else (key,)))
+
+        with plt.rc_context(PLOT_RC):
+            fig, ax = plt.subplots(figsize=FIG_SIZE, dpi=FIG_DPI)
+        fig.patch.set_facecolor(STYLE["figure_bg"])
+        ax.set_facecolor(STYLE["axes_bg"])
+        ax.plot([0, 1], [0, 1], "--", color="#aaaaaa", linewidth=1, label="Clasificador aleatorio")
+        ax.grid(True, color=STYLE["grid"], linewidth=0.6, zorder=0)
+        ax.set_axisbelow(True)
+
+        any_plotted = False
+        for model_type, color in _CURVES_MODEL_COLORS.items():
+            sub = gdf[gdf["model_type"] == model_type]
+            if sub.empty:
+                continue
+
+            # Interpolar cada semilla a fpr_grid y apilar
+            tpr_interps: list[np.ndarray] = []
+            for _, seed_df in sub.groupby("seed", dropna=False):
+                sdf = seed_df.sort_values("fpr")
+                fpr_s = sdf["fpr"].to_numpy(dtype=float)
+                tpr_s = sdf["tpr"].to_numpy(dtype=float)
+                if len(fpr_s) < 2:
+                    continue
+                tpr_interp = np.interp(fpr_grid, fpr_s, tpr_s)
+                tpr_interps.append(tpr_interp)
+
+            if not tpr_interps:
+                continue
+
+            mat  = np.array(tpr_interps)
+            mean = mat.mean(axis=0)
+            std  = mat.std(axis=0)
+            auc_mean = float(np.sum((fpr_grid[1:] - fpr_grid[:-1]) * (mean[1:] + mean[:-1]) / 2.0))
+
+            label = f"{model_type}  AUC={auc_mean:.3f} (n={len(tpr_interps)} seeds)"
+            ax.plot(fpr_grid, mean, color=color, linewidth=2.0, label=label, zorder=3)
+            if len(tpr_interps) > 1:
+                ax.fill_between(
+                    fpr_grid, mean - std, mean + std,
+                    color=color, alpha=0.15, zorder=2,
+                )
+            any_plotted = True
+
+        if not any_plotted:
+            plt.close(fig)
+            continue
+
+        title_parts = [f"{c}={k}" for c, k in zip(group_cols, key if isinstance(key, tuple) else (key,))]
+        title = "ROC Curve — " + ", ".join(title_parts)
+        ax.set_title(title, color=STYLE["text_title"], pad=8)
+        ax.set_xlabel("FPR (False Positive Rate)", color=STYLE["text_axis"])
+        ax.set_ylabel("TPR (True Positive Rate / Recall)", color=STYLE["text_axis"])
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.05)
+        ax.tick_params(colors=STYLE["text_axis"])
+        ax.legend(fontsize=9, loc="lower right")
+        fig.tight_layout(pad=1.5)
+
+        safe_key = re.sub(r"[^\w.\-]+", "_", key_str).strip("_") or "group"
+        dest = out_dir / f"roc_{safe_key}.png"
+        save_figure(fig, dest)
+        plt.close(fig)
+        written.append(dest)
+        print(f"Saved: {dest}")
+
+    return written
+
+
+def _add_roc_parser(sub) -> argparse.ArgumentParser:
+    p = sub.add_parser(
+        "roc",
+        help="ROC curves for threshold analysis from linear_vs_nonlinear_roc.csv.",
+    )
+    p.add_argument(
+        "--roc-csv",
+        type=Path,
+        default=ROOT / "results" / "linear_vs_nonlinear_roc.csv",
+        help="Path to ROC CSV (default: results/linear_vs_nonlinear_roc.csv)",
+    )
+    p.add_argument("--out", type=Path, required=True, help="Output directory for PNGs")
+    p.add_argument(
+        "--filter",
+        action="append",
+        dest="filters",
+        metavar="KEY=VALUE",
+        type=_parse_filter,
+        help="Filter rows, e.g. --filter model_type=non-linear --filter activation=logistic",
+    )
+    p.add_argument(
+        "--group-by",
+        action="append",
+        dest="group_by",
+        metavar="COL",
+        help="Grouping columns (repeat for multiple). Default: name activation lr test_per",
+    )
+    return p
+
+
 def _add_confusion_parser(sub) -> argparse.ArgumentParser:
     p = sub.add_parser(
         "confusion",
@@ -1293,11 +1619,16 @@ def _add_confusion_parser(sub) -> argparse.ArgumentParser:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Linear vs non-linear plots: boxplot comparisons or confusion heatmaps."
+        description=(
+            "Linear vs non-linear plots: boxplot comparisons, confusion heatmaps, "
+            "learning curves (curves) o curvas ROC (roc)."
+        )
     )
     sub = parser.add_subparsers(dest="command", required=True)
     _add_compare_parser(sub)
     _add_confusion_parser(sub)
+    _add_curves_parser(sub)
+    _add_roc_parser(sub)
     args = parser.parse_args()
 
     if args.command == "compare":
@@ -1348,6 +1679,39 @@ def main() -> None:
             print(f"\nTotal: {len(paths)} figure(s) written to {out_dir}")
         else:
             print("No figures written (check filters and columns).")
+        return
+
+    if args.command == "curves":
+        filters: dict[str, list[str]] = {}
+        for k, v in args.filters or []:
+            filters.setdefault(k, []).append(v)
+        written = run_curves_figures(
+            args.curves_csv.resolve(),
+            args.out.resolve(),
+            filters=filters or None,
+            group_by=args.group_by,
+            smooth=args.smooth,
+        )
+        if not written:
+            print("No figures written. Check filters and CSV path.")
+        else:
+            print(f"Total: {len(written)} figure(s) written to {args.out.resolve()}")
+        return
+
+    if args.command == "roc":
+        filters: dict[str, list[str]] = {}
+        for k, v in args.filters or []:
+            filters.setdefault(k, []).append(v)
+        written = run_roc_figures(
+            args.roc_csv.resolve(),
+            args.out.resolve(),
+            filters=filters or None,
+            group_by=args.group_by,
+        )
+        if not written:
+            print("No figures written. Check filters and CSV path.")
+        else:
+            print(f"Total: {len(written)} figure(s) written to {args.out.resolve()}")
         return
 
     # confusion
