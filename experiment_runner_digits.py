@@ -3,8 +3,7 @@ import json
 import argparse
 import numpy as np
 import multiprocessing as mp
-from datetime import datetime
-from datasets.digit_dataset_loader import load_digits, encode_one_hot
+from digit_dataset_loader import load_dataset
 from utils.test_data_split import stratified_split
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from utils.metrics import compute_metrics
@@ -15,6 +14,23 @@ MODELS_DIR  = os.path.join(RESULTS_DIR, "models")
 
 TRAIN_PATH = "datasets/digits.csv"
 SEED       = 1
+VALID_OPTIMIZERS = {"gd", "sgd", "rmsprop", "adam"}
+OFF_TARGET_BY_ACTIVATION = {"logistic": 0.0, "tanh": -1.0}
+
+
+def load_digits(path):
+    df = load_dataset(path)
+    return np.stack(df["image"].to_numpy()), df["label"].to_numpy(dtype=np.int64)
+
+
+def encode_one_hot(labels, n_outputs, activation="tanh"):
+    if activation not in OFF_TARGET_BY_ACTIVATION:
+        raise ValueError("activation must be 'tanh' or 'logistic'")
+
+    labels = labels.astype(int)
+    targets = np.full((len(labels), n_outputs), OFF_TARGET_BY_ACTIVATION[activation])
+    targets[np.arange(len(labels)), labels] = 1.0
+    return targets
 
 EXPERIMENTS = [
    
