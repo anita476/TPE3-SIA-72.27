@@ -78,7 +78,7 @@ class Adam:
 
 
 def build_optimizer(name, learning_rate):
-    if name == "sgd":
+    if name in {"gd", "sgd"}:
         return SGD(learning_rate)
     elif name == "rmsprop":
         return RMSProp(learning_rate)

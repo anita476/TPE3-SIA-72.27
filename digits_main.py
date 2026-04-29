@@ -45,7 +45,8 @@ def parse_arguments():
         "--optimizer",
         type=str,
         default="sgd",
-        choices=["sgd", "rmsprop", "adam"],
+        choices=["gd", "sgd", "rmsprop", "adam"],
+        help="Optimizer. gd uses the full dataset in one update per epoch; sgd uses online or mini-batch updates.",
     )
     return parser.parse_args()
 

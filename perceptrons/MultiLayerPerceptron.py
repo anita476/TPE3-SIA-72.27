@@ -102,8 +102,13 @@ class MultiLayerPerceptron:
     # Training
     # ------------------------------------------------------------------
 
+    def _effective_batch_size(self, n_samples):
+        if self._optimizer_name == "gd":
+            return max(1, n_samples)
+        return 1 if self.training_mode == "online" else self.batch_size
+
     def _train_batch_epoch(self, X, y, indices):
-        effective_batch_size = 1 if self.training_mode == "online" else self.batch_size
+        effective_batch_size = self._effective_batch_size(len(indices))
 
         for start in range(0, len(indices), effective_batch_size):
             batch_idx = indices[start:start + effective_batch_size]

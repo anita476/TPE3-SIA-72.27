@@ -35,14 +35,14 @@ def parse_arguments()-> argparse.Namespace:
     arguments.add_argument("--tolerance", type=float, default=0.5, help="Tolerance for interpreting predictions as correct (for linear and non-linear perceptrons). Default is 0.5")
     arguments.add_argument("--test_per", type=float, default=0.2, help="Fraction for test split in decimals (for example 0.2 = 20%%)")
     arguments.add_argument("--seed", type=int, default=1, help="Random seed")
-    arguments.add_argument("--activation", type=str, default="tanh", choices=["tanh", "logistic"], help="Activation function for non-linear and multilayer perceptrons. Default is tanh")
+    arguments.add_argument("--activation", type=str, default="tanh", choices=["tanh", "logistic", "relu"], help="Activation function for non-linear and multilayer perceptrons. Default is tanh")
     arguments.add_argument("--beta", type=float, default=1.0, help="Beta scaling parameter for non-linear perceptron. Default is 1.0")
     arguments.add_argument("--no_split", action="store_true", help="Skip train/test split, evaluate on full dataset")
     arguments.add_argument("--layers", type=int, nargs="+", default=[2, 2, 1], help="Layer sizes for multilayer perceptron (e.g. --layers 2 2 1)")
     arguments.add_argument("--initializer", type=str, default="random", choices=["random", "xavier", "xavier_n"], help="Weight initializer for multilayer perceptron. Default is random")
     arguments.add_argument("--training_mode", type=str, default="online", choices=["online", "minibatch"], help="Weight update mode for multilayer perceptron. Default is online")
-    arguments.add_argument("--batch_size", type=int, default=1, help="Mini-batch size for multilayer perceptron when --training_mode minibatch")
-    arguments.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "rmsprop", "adam"], help="Optimizer for multilayer perceptron. Default is sgd")
+    arguments.add_argument("--batch_size", type=int, default=1, help="Mini-batch size for multilayer perceptron when --training_mode minibatch, or for --optimizer sgd")
+    arguments.add_argument("--optimizer", type=str, default="sgd", choices=["gd", "sgd", "rmsprop", "adam"], help="Optimizer for multilayer perceptron. gd uses the full dataset in one update per epoch; sgd uses online or mini-batch updates. Default is sgd")
     arguments.add_argument("--label", type=str, default="label",help= "Label column name to drop in data loading")
     arguments.add_argument(
         "--normalize",
