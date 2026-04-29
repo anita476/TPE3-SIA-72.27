@@ -227,6 +227,7 @@ class MultiLayerPerceptron:
             arrays["_train_loss"]  = np.array(self.errors_)
             arrays["_val_loss"]    = np.array(self.val_errors_)
             arrays["_val_acc"]     = np.array(self.val_accuracies_)
+            arrays["_train_acc"]   = np.array(self.train_accuracies_)
         np.savez(path, **arrays)
         print(f"Model saved → {path}.npz")
 
@@ -255,8 +256,9 @@ class MultiLayerPerceptron:
         model.biases  = [data[f"b{i}"] for i in range(n)]
         # Restore training history if present
         if "_train_loss" in data:
-            model.errors_          = data["_train_loss"].tolist()
-            model.val_errors_      = data["_val_loss"].tolist()
-            model.val_accuracies_  = data["_val_acc"].tolist()
+            model.errors_           = data["_train_loss"].tolist()
+            model.val_errors_       = data["_val_loss"].tolist()
+            model.val_accuracies_   = data["_val_acc"].tolist()
+            model.train_accuracies_ = data["_train_acc"].tolist() if "_train_acc" in data else []
         print(f"Model loaded ← {p}")
         return model

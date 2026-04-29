@@ -7,7 +7,7 @@ from datetime import datetime
 from datasets.digit_dataset_loader import load_digits, encode_one_hot
 from utils.test_data_split import stratified_split
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
-from utils.metrics import compute_metrics, compute_config_id
+from utils.metrics import compute_metrics
 from utils.visualization import print_summary, plot_accuracy_bars, plot_val_accuracy, plot_overfitting_diagnosis
 
 RESULTS_DIR = "results"
@@ -78,10 +78,11 @@ def run_experiment(config, X_train, y_train, train_labels, X_eval, y_eval, eval_
     print(f"Train acc: {train_acc*100:.1f}%  |  Best val: {best_val_acc*100:.1f}% @ ep {best_epoch}"
           f"  |  Macro F1: {eval_metrics['macro_f1']*100:.1f}%")
 
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    safe_name = config["name"].replace(" ", "_").replace("=", "_").replace("/", "-")
-    seed_suffix = f"_s{config['seed']}" if "seed" in config else ""
-    mlp.save(os.path.join(MODELS_DIR, f"{safe_name}{seed_suffix}"))
+    safe_name  = config["name"].replace(" ", "_").replace("=", "_").replace("/", "-")
+    config_dir = os.path.join(MODELS_DIR, safe_name)
+    os.makedirs(config_dir, exist_ok=True)
+    seed_val   = config.get("seed", SEED)
+    mlp.save(os.path.join(config_dir, f"seed_{seed_val}"))
 
     return {
         "name":          config["name"],
@@ -94,7 +95,6 @@ def run_experiment(config, X_train, y_train, train_labels, X_eval, y_eval, eval_
         "val_acc":             val_accs,
         "train_acc_per_epoch": mlp.train_accuracies_,
         "config":    config,
-        "config_id": compute_config_id(config),
     }
 
 def _worker(args):

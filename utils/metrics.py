@@ -1,18 +1,4 @@
-import json
-import hashlib
 import numpy as np
-
-
-def compute_config_id(config):
-    """8-char hash of hyperparameters (excludes name, seed, seeds).
-
-    Two configs with identical architecture/optimizer/training settings
-    produce the same id regardless of their name or random seed.
-    """
-    excluded = {"name", "seed", "seeds"}
-    canonical = {k: v for k, v in sorted(config.items()) if k not in excluded}
-    h = hashlib.md5(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
-    return h[:8]
 
 
 def compute_metrics(y_true, y_pred, n_classes=10):
