@@ -1,6 +1,18 @@
-import os
+import json
+import hashlib
 import numpy as np
-import pandas as pd
+
+
+def compute_config_id(config):
+    """8-char hash of hyperparameters (excludes name, seed, seeds).
+
+    Two configs with identical architecture/optimizer/training settings
+    produce the same id regardless of their name or random seed.
+    """
+    excluded = {"name", "seed", "seeds"}
+    canonical = {k: v for k, v in sorted(config.items()) if k not in excluded}
+    h = hashlib.md5(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+    return h[:8]
 
 
 def compute_metrics(y_true, y_pred, n_classes=10):
@@ -49,36 +61,5 @@ def compute_metrics(y_true, y_pred, n_classes=10):
     }
 
 
-def epochs_to_threshold(val_accuracies, threshold):
-    """Return the first epoch (1-indexed) where val accuracy >= threshold, or None."""
-    for i, acc in enumerate(val_accuracies):
-        if acc >= threshold:
-            return i + 1
-    return None
 
 
-def save_perclass_csv(results, perclass_csv):
-    """Append per-class precision/recall/F1 for every experiment to a CSV."""
-    os.makedirs(os.path.dirname(perclass_csv), exist_ok=True)
-    rows = []
-    for r in results:
-        cfg  = r["config"]
-        base = {
-            "name":        r["name"],
-            "layers":      str(cfg.get("layers", "")),
-            "lr":          cfg.get("lr", ""),
-            "initializer": cfg.get("initializer", "random"),
-        }
-        for split, metrics in [("train", r["train_metrics"]), ("test", r["test_metrics"])]:
-            for k in range(len(metrics["f1"])):
-                rows.append({
-                    **base,
-                    "set":       split,
-                    "class":     k,
-                    "precision": round(metrics["precision"][k], 4),
-                    "recall":    round(metrics["recall"][k],    4),
-                    "f1":        round(metrics["f1"][k],        4),
-                    "support":   int(metrics["support"][k]),
-                })
-    pd.DataFrame(rows).to_csv(perclass_csv, mode="a", header=not os.path.exists(perclass_csv), index=False)
-    print(f"Per-class metrics saved → {perclass_csv}")

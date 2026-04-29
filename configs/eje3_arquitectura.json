@@ -1,0 +1,8 @@
+[
+  {"name": "[784,10]",          "layers": [784, 10],           "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16, "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "[784,50,10]",       "layers": [784, 50, 10],       "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16, "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "[784,100,10]",      "layers": [784, 100, 10],      "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16, "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "[784,100,100,10]",  "layers": [784, 100, 100, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16, "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "[784,128,64,10]",   "layers": [784, 128, 64, 10],  "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16, "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "[784,250,10]",      "layers": [784, 250, 10],      "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16, "optimizer": "sgd", "seeds": [1, 2, 3]}
+]

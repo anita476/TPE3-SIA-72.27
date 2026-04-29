@@ -1,0 +1,6 @@
+[
+  {"name": "b=1",   "layers": [784, 50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "online",    "batch_size": 1,   "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "b=16",  "layers": [784, 50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 16,  "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "b=64",  "layers": [784, 50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 64,  "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "b=250", "layers": [784, 50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh", "initializer": "xavier", "training_mode": "minibatch", "batch_size": 250, "optimizer": "sgd", "seeds": [1, 2, 3]}
+]

@@ -3,11 +3,10 @@ Reload saved models from results/models/ and regenerate all plots
 without retraining.
 
 Usage:
-    python3 remake_plots.py                        # all models in results/models/
-    python3 remake_plots.py --models results/models/xavier_s_1.npz xavier_s_2.npz
+    python3 remake_plots.py                              # all models in results/models/
+    python3 remake_plots.py --models results/models/xavier.npz results/models/random.npz
 """
 import os
-import re
 import glob
 import argparse
 import numpy as np
@@ -15,10 +14,10 @@ import numpy as np
 from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from datasets.digit_dataset_loader import load_digits, encode_one_hot
 from utils.test_data_split import stratified_split
-from utils.metrics import compute_metrics, epochs_to_threshold
+from utils.metrics import compute_metrics, compute_config_id
 from utils.visualization import (
-    print_summary, print_perclass_summary,
-    plot_loss_curves, plot_accuracy_bars, plot_convergence,
+    print_summary,
+    plot_accuracy_bars, plot_val_accuracy, plot_overfitting_diagnosis,
     plot_confusion_matrices, plot_perclass_heatmap,
 )
 
@@ -27,18 +26,8 @@ TRAIN_PATH = "datasets/digits.csv"
 SEED       = 1   # must match experiment_runner_digits.py
 
 
-def _name_from_path(path):
-    """'results/models/xavier_s_1.npz' → 'xavier s=1'"""
-    stem = os.path.splitext(os.path.basename(path))[0]
-    # reverse the safe_name substitution: underscores back to spaces,
-    # then fix 's_N' → 's=N'
-    name = stem.replace("_", " ")
-    name = re.sub(r"\bs (\d+)$", r"s=\1", name)
-    return name
-
-
-def _build_result(path, X_train, train_labels, X_val, val_labels, y_train, y_val):
-    name = _name_from_path(path)
+def _build_result(path, X_train, train_labels, X_val, val_labels):
+    name = os.path.splitext(os.path.basename(path))[0]
     print(f"  Loading {name} ← {path}")
     mlp = MultiLayerPerceptron.load(path)
 
@@ -50,32 +39,38 @@ def _build_result(path, X_train, train_labels, X_val, val_labels, y_train, y_val
     train_metrics = compute_metrics(train_labels, train_preds)
     val_metrics   = compute_metrics(val_labels,   val_preds)
 
-    # Epoch-level history (available only if model was saved after fit())
-    has_history   = hasattr(mlp, "errors_") and mlp.errors_
-    train_loss    = [e / len(X_train) for e in mlp.errors_]       if has_history else []
-    val_loss      = [e / len(X_val)   for e in mlp.val_errors_]   if has_history else []
-    val_accs_ep   = mlp.val_accuracies_                            if has_history else []
+    has_history  = hasattr(mlp, "errors_") and mlp.errors_
+    train_loss   = [e / len(X_train) for e in mlp.errors_]     if has_history else []
+    val_loss     = [e / len(X_val)   for e in mlp.val_errors_] if has_history else []
+    val_accs_ep  = mlp.val_accuracies_                          if has_history else []
 
-    best_epoch    = int(np.argmax(val_accs_ep)) + 1 if val_accs_ep else None
-    best_val_acc  = float(np.max(val_accs_ep))      if val_accs_ep else val_acc
+    best_val_acc = float(np.max(val_accs_ep)) if val_accs_ep else val_acc
 
     return {
         "name":               name,
-        "config":             {},
+        "config":             {"layers": list(mlp.layers)},
         "train_acc":          train_acc,
-        "test_acc":           val_acc,
-        "best_test_acc":      best_val_acc,
-        "best_epoch":         best_epoch,
-        "gap":                train_acc - val_acc,
-        "epochs_to_80":       epochs_to_threshold(val_accs_ep, 0.80),
-        "epochs_to_85":       epochs_to_threshold(val_accs_ep, 0.85),
-        "final_train_loss":   train_loss[-1] if train_loss else None,
-        "final_test_loss":    val_loss[-1]   if val_loss   else None,
+        "best_val_acc":       best_val_acc,
+        "macro_f1":           val_metrics["macro_f1"],
         "train_loss":         train_loss,
-        "test_loss":          val_loss,
-        "test_acc_per_epoch": val_accs_ep,
+        "val_loss":           val_loss,
+        "val_acc":            val_accs_ep,
+        "train_acc_per_epoch": [],   # not stored in model files
         "train_metrics":      train_metrics,
         "test_metrics":       val_metrics,
+        "config_id":          compute_config_id({
+            "layers":        list(mlp.layers),
+            "learning_rate": mlp.learning_rate,
+            "epochs":        mlp.epochs,
+            "epsilon":       mlp.epsilon,
+            "beta":          mlp.beta,
+            "activation":    mlp.activation,
+            "training_mode": mlp.training_mode,
+            "batch_size":    mlp.batch_size,
+            "weight_decay":  mlp.weight_decay,
+            "patience":      mlp.patience,
+            "optimizer":     mlp._optimizer_name,
+        }),
     }
 
 
@@ -96,26 +91,22 @@ def main():
     X_train, X_val, train_labels, val_labels = stratified_split(
         X_all, all_labels, val_size=0.2, random_state=SEED
     )
-    y_train = encode_one_hot(train_labels, 10)
-    y_val   = encode_one_hot(val_labels,   10)
     print(f"  train: {len(X_train)}  val: {len(X_val)}")
 
-    results = [_build_result(p, X_train, train_labels, X_val, val_labels, y_train, y_val)
+    results = [_build_result(p, X_train, train_labels, X_val, val_labels)
                for p in paths]
     results.sort(key=lambda r: r["name"])
 
     print("\n=== SUMMARY ===")
     print_summary(results)
-    print_perclass_summary(results)
     plot_accuracy_bars(results)
-    plot_confusion_matrices(results)
     plot_perclass_heatmap(results)
 
-    if any(r["train_loss"] for r in results):
-        plot_loss_curves(results)
-        plot_convergence(results)
+    if any(r["val_acc"] for r in results):
+        plot_val_accuracy(results)
+        plot_overfitting_diagnosis(results)
     else:
-        print("(No training history in saved models — loss/convergence plots skipped)")
+        print("(No training history in saved models — curve plots skipped)")
 
 
 if __name__ == "__main__":

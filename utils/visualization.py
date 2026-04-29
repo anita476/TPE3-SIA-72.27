@@ -1,5 +1,4 @@
 import os
-import re
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -8,22 +7,23 @@ PLOTS_DIR = "plots"
 
 
 def _group_results(results):
-    """Group results that share the same base config name.
+    """Group results by config_id (if present) or name.
 
-    A result named "xavier s=2" is grouped under "xavier" (strips trailing ' s=<N>').
-    Results without that suffix form single-element groups (std = 0).
+    config_id is a hash of hyperparameters excluding name/seed, so runs
+    from the same config under different seeds are reliably grouped together.
+    Display name = the 'name' field of the first run in each group.
 
-    Returns a list of (group_name, [result, ...]) in original order.
+    Returns a list of (display_name, [result, ...]) in original order.
     """
     groups = {}
-    order = []
+    order  = []
     for r in results:
-        base = re.sub(r"\s+s=\d+$", "", r["name"])
-        if base not in groups:
-            groups[base] = []
-            order.append(base)
-        groups[base].append(r)
-    return [(name, groups[name]) for name in order]
+        key = r.get("config_id", r["name"])
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    return [(groups[key][0]["name"], groups[key]) for key in order]
 
 
 def _save(fig, filename):
@@ -36,174 +36,150 @@ def _save(fig, filename):
 
 # ── Multi-experiment plots ────────────────────────────────────────────────────
 
-def plot_loss_curves(results):
-    groups = _group_results(results)
-    fig, (ax_train, ax_test) = plt.subplots(1, 2, figsize=(14, 5))
+def plot_learning_curves(results):
+    """One figure, two panels: losses (left) and val accuracy (right).
+
+    Each config group gets one color. Train loss = solid, val loss = dashed.
+    Std band across seeds is shown when > 1 seed. Answers:
+      - Is the model overfitting? (train loss << val loss)
+      - Is it converging? (val accuracy flattening)
+      - Is it unstable? (jagged curves)
+    """
+    groups     = _group_results(results)
     prop_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(13, 4.5))
 
     for i, (name, runs) in enumerate(groups):
         color = prop_cycle[i % len(prop_cycle)]
-        for key, ax in [("train_loss", ax_train), ("test_loss", ax_test)]:
-            curves = [r[key] for r in runs]
-            n_epochs = min(len(c) for c in curves)
-            mat = np.array([c[:n_epochs] for c in curves])   # (n_seeds, epochs)
+
+        # ── losses ──────────────────────────────────────────────────────────
+        for key, ls in [("train_loss", "-"), ("val_loss", "--")]:
+            curves = [r[key] for r in runs if r[key]]
+            if not curves:
+                continue
+            n = min(len(c) for c in curves)
+            mat  = np.array([c[:n] for c in curves])
             mean = mat.mean(axis=0)
-            std  = mat.std(axis=0)
-            xs   = range(1, n_epochs + 1)
-            ax.plot(xs, mean, color=color, label=name)
+            xs   = range(1, n + 1)
+            label = f"{name} ({'train' if ls == '-' else 'val'})"
+            ax_loss.plot(xs, mean, color=color, linestyle=ls, label=label, linewidth=1.2)
             if len(runs) > 1:
-                ax.fill_between(xs, mean - std, mean + std, color=color, alpha=0.2)
+                std = mat.std(axis=0)
+                ax_loss.fill_between(xs, mean - std, mean + std, color=color, alpha=0.15)
 
-    for ax, title in [(ax_train, "Train loss"), (ax_test, "Validation loss")]:
-        ax.set_title(title)
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Loss")
-        ax.legend(fontsize=7)
+        # ── val accuracy ─────────────────────────────────────────────────────
+        curves = [r["val_acc"] for r in runs if r.get("val_acc")]
+        if curves:
+            n    = min(len(c) for c in curves)
+            mat  = np.array([c[:n] for c in curves]) * 100
+            mean = mat.mean(axis=0)
+            xs   = range(1, n + 1)
+            ax_acc.plot(xs, mean, color=color, label=name, linewidth=1.2)
+            if len(runs) > 1:
+                std = mat.std(axis=0)
+                ax_acc.fill_between(xs, mean - std, mean + std, color=color, alpha=0.15)
+
+    ax_loss.set_title("Loss per epoch  (— train,  -- val)")
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel("Loss")
+    ax_loss.legend(fontsize=7)
+
+    ax_acc.set_title("Validation accuracy per epoch")
+    ax_acc.set_xlabel("Epoch")
+    ax_acc.set_ylabel("Accuracy (%)")
+    ax_acc.legend(fontsize=7)
+
     fig.tight_layout()
-    _save(fig, "loss_curves.png")
+    _save(fig, "learning_curves.png")
 
 
-def plot_accuracy_bars(results):
+def plot_val_accuracy(results):
+    """All configs on one axes: val accuracy per epoch. Answers: which learns best and fastest?"""
     groups = _group_results(results)
-    names       = [name for name, _ in groups]
-    train_means = [np.mean([r["train_acc"] for r in runs]) for _, runs in groups]
-    train_stds  = [np.std( [r["train_acc"] for r in runs]) for _, runs in groups]
-    test_means  = [np.mean([r["test_acc"]  for r in runs]) for _, runs in groups]
-    test_stds   = [np.std( [r["test_acc"]  for r in runs]) for _, runs in groups]
-
-    x     = np.arange(len(names))
-    width = 0.35
-    fig, ax = plt.subplots(figsize=(max(8, len(names) * 2), 5))
-    ax.bar(x - width / 2, train_means, width, yerr=train_stds, capsize=4, label="Train")
-    ax.bar(x + width / 2, test_means,  width, yerr=test_stds,  capsize=4, label="Validation")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Train vs test accuracy per experiment (mean ± std across seeds)")
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=15, ha="right", fontsize=8)
-    all_vals = train_means + test_means
-    top = min(3, max(all_vals) + 0.08)   # headroom for labels
-    ax.set_ylim(max(0, min(all_vals) - 0.1), top)
-    ax.legend()
-    for i, (tr, te) in enumerate(zip(train_means, test_means)):
-        ax.text(i - width / 2, tr + 0.01, f"{tr*100:.1f}%", ha="center", fontsize=7)
-        ax.text(i + width / 2, te + 0.01, f"{te*100:.1f}%", ha="center", fontsize=7)
-    fig.tight_layout()
-    _save(fig, "accuracy_bars.png")
-
-
-def plot_convergence(results):
-    groups = _group_results(results)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    prop_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    fig, ax = plt.subplots(figsize=(9, 5))
 
     for i, (name, runs) in enumerate(groups):
-        color  = prop_cycle[i % len(prop_cycle)]
-        curves = [r["test_acc_per_epoch"] for r in runs if r["test_acc_per_epoch"]]
+        curves = [r["val_acc"] for r in runs if r.get("val_acc")]
         if not curves:
             continue
-        n_epochs = min(len(c) for c in curves)
-        mat  = np.array([c[:n_epochs] for c in curves]) * 100   # percent
+        n    = min(len(c) for c in curves)
+        mat  = np.array([c[:n] for c in curves]) * 100
         mean = mat.mean(axis=0)
-        std  = mat.std(axis=0)
-        xs   = range(1, n_epochs + 1)
-        ax.plot(xs, mean, color=color, label=name)
+        xs   = range(1, n + 1)
+        ax.plot(xs, mean, label=name, linewidth=1.5)
         if len(runs) > 1:
-            ax.fill_between(xs, mean - std, mean + std, color=color, alpha=0.2)
+            std = mat.std(axis=0)
+            ax.fill_between(xs, mean - std, mean + std, alpha=0.15)
 
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Validation accuracy (%)")
-    ax.set_title("Validation accuracy over epochs (mean ± std across seeds)")
-    ax.legend(fontsize=7)
+    ax.set_title("Validation accuracy: which configuration learns best?")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    _save(fig, "convergence.png")
+    _save(fig, "val_accuracy.png")
 
 
-def plot_confusion_matrices(results):
-    """One confusion matrix per config group, averaged across seeds."""
+def plot_overfitting_diagnosis(results):
+    """One figure per config: train vs val accuracy. Answers: is this model overfitting?"""
     groups = _group_results(results)
-    n   = len(groups)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4.5))
-    if n == 1:
-        axes = [axes]
-    for ax, (name, runs) in zip(axes, groups):
-        # Sum raw counts across seeds, then normalize each row to [0, 1]
-        # Row i sums to 1 → each cell = fraction of true class i predicted as j
-        cm_sum  = np.sum([r["test_metrics"]["confusion_matrix"] for r in runs], axis=0).astype(float)
-        row_sum = cm_sum.sum(axis=1, keepdims=True)
-        cm_norm = cm_sum / np.maximum(row_sum, 1)   # avoids div-by-zero for empty classes
 
-        n_seeds = len(runs)
-        im = ax.imshow(cm_norm, cmap="Blues", vmin=0, vmax=1)
-        ax.set_title(f"{name}" + (f"  (Σ {n_seeds} seeds)" if n_seeds > 1 else ""), fontsize=7)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("True")
-        ax.set_xticks(range(10))
-        ax.set_yticks(range(10))
-        for i in range(10):
-            for j in range(10):
-                v = cm_norm[i, j]
-                ax.text(j, i, f"{v*100:.0f}%", ha="center", va="center", fontsize=6,
-                        color="white" if v > 0.5 else "black")
-        fig.colorbar(im, ax=ax, shrink=0.8)
+    for name, runs in groups:
+        fig, ax = plt.subplots(figsize=(8, 4))
+
+        for curves_key, label, color in [
+            ("train_acc_per_epoch", "Train",      "tab:blue"),
+            ("val_acc",             "Validation",  "tab:orange"),
+        ]:
+            curves = [r.get(curves_key) for r in runs]
+            curves = [c for c in curves if c]
+            if not curves:
+                continue
+            n    = min(len(c) for c in curves)
+            mat  = np.array([c[:n] for c in curves]) * 100
+            mean = mat.mean(axis=0)
+            ax.plot(range(1, n + 1), mean, label=label, color=color, linewidth=1.5)
+            if len(runs) > 1:
+                std = mat.std(axis=0)
+                ax.fill_between(range(1, n + 1), mean - std, mean + std,
+                                color=color, alpha=0.15)
+
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Accuracy (%)")
+        ax.set_title(f"{name} — train vs validation")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        safe = name.replace(" ", "_").replace("/", "-")
+        _save(fig, f"overfitting_{safe}.png")
+
+
+def plot_accuracy_bars(results):
+    """Bar chart: train vs best-val accuracy per config group (mean ± std across seeds)."""
+    groups      = _group_results(results)
+    names       = [name for name, _ in groups]
+    train_means = [np.mean([r["train_acc"]    for r in runs]) for _, runs in groups]
+    train_stds  = [np.std( [r["train_acc"]    for r in runs]) for _, runs in groups]
+    val_means   = [np.mean([r["best_val_acc"] for r in runs]) for _, runs in groups]
+    val_stds    = [np.std( [r["best_val_acc"] for r in runs]) for _, runs in groups]
+
+    x     = np.arange(len(names))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(max(6, len(names) * 2), 5))
+    ax.bar(x - width / 2, train_means, width, yerr=train_stds, capsize=4, label="Train")
+    ax.bar(x + width / 2, val_means,   width, yerr=val_stds,   capsize=4, label="Validation")
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Train vs validation accuracy (mean ± std across seeds)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(names, rotation=15, ha="right", fontsize=8)
+    all_vals = train_means + val_means
+    ax.set_ylim(max(0, min(all_vals) - 0.05), min(1.05, max(all_vals) + 0.08))
+    ax.legend()
+    for i, (tr, va) in enumerate(zip(train_means, val_means)):
+        ax.text(i - width / 2, tr + 0.005, f"{tr*100:.1f}%", ha="center", fontsize=7)
+        ax.text(i + width / 2, va + 0.005, f"{va*100:.1f}%", ha="center", fontsize=7)
     fig.tight_layout()
-    _save(fig, "confusion_matrices.png")
-
-
-def plot_perclass_heatmap(results):
-    """Figure B: per-class metrics heatmap, one subplot per config group.
-
-    Layout: 10 rows (digits 0-9) × 3 columns (Precision, Recall, F1).
-    Each cell shows the mean value across seeds.
-    The figure caption reports the maximum std observed (hybrid approach).
-    """
-    groups    = _group_results(results)
-    n_groups  = len(groups)
-    metrics   = ["precision", "recall", "f1"]
-    col_labels = ["Precision", "Recall", "F1"]
-    row_labels = [str(k) if k != 8 else "8 (absent)" for k in range(10)]
-    cmap = LinearSegmentedColormap.from_list("metrics", ["#d73027", "#fee08b", "#1a9850"])
-
-    fig, axes = plt.subplots(1, n_groups, figsize=(4.5 * n_groups, 5.5))
-    if n_groups == 1:
-        axes = [axes]
-
-    max_std_overall = 0.0
-
-    for ax, (name, runs) in zip(axes, groups):
-        mean_mat = np.zeros((10, 3))
-        std_mat  = np.zeros((10, 3))
-        for j, metric in enumerate(metrics):
-            for k in range(10):
-                vals = [r["test_metrics"][metric][k] for r in runs]
-                mean_mat[k, j] = np.mean(vals)
-                std_mat[k, j]  = np.std(vals)
-
-        max_std_overall = max(max_std_overall, std_mat.max())
-
-        im = ax.imshow(mean_mat, cmap=cmap, vmin=0, vmax=1, aspect="auto")
-
-        ax.set_xticks(range(3))
-        ax.set_xticklabels(col_labels, fontsize=9)
-        ax.set_yticks(range(10))
-        ax.set_yticklabels(row_labels, fontsize=8)
-        ax.set_title(name, fontsize=9)
-
-        for k in range(10):
-            for j in range(3):
-                v = mean_mat[k, j]
-                ax.text(j, k, f"{v:.2f}", ha="center", va="center", fontsize=8,
-                        color="white" if v < 0.35 or v > 0.80 else "black")
-
-        fig.colorbar(im, ax=ax, shrink=0.85, label="Score")
-
-    std_note = f"Max std across all cells: ±{max_std_overall:.3f}" if max_std_overall > 0 else ""
-    fig.suptitle(
-        "Per-class Precision / Recall / F1  (validation set)"
-        + (f"\n{std_note}" if std_note else ""),
-        fontsize=10
-    )
-    fig.tight_layout()
-    _save(fig, "perclass_heatmap.png")
+    _save(fig, "accuracy_bars.png")
 
 
 # ── Console output ───────────────────────────────────────────────────────────
@@ -214,11 +190,11 @@ def print_summary(results):
     When multiple results share a base config name (differ only by ' s=N' suffix),
     they are collapsed into one row showing mean ± std.
     """
+    def _params(layers):
+        return sum(layers[i] * layers[i+1] + layers[i+1] for i in range(len(layers) - 1))
+
     groups = _group_results(results)
-    header = (
-        f"{'Experiment':<32} {'Train':>12} {'Val':>12} {'Best':>12}"
-        f" {'Gap':>6} {'MacroF1':>8} {'E→80%':>5} {'E→85%':>5}"
-    )
+    header = f"{'Experiment':<28} {'Params':>8} {'Val acc':>13} {'Macro-F1':>13}"
     print("\n" + "=" * len(header))
     print(header)
     print("=" * len(header))
@@ -226,74 +202,15 @@ def print_summary(results):
         def _fmt(vals, pct=True):
             m = np.mean(vals) * (100 if pct else 1)
             s = np.std(vals)  * (100 if pct else 1)
-            return f"{m:5.1f}±{s:.1f}%" if len(runs) > 1 else f"{m:5.1f}%      "
+            return f"{m:5.1f}±{s:.1f}%" if len(runs) > 1 else f"{m:5.1f}%"
 
-        train_str = _fmt([r["train_acc"]     for r in runs])
-        test_str  = _fmt([r["test_acc"]      for r in runs])
-        best_str  = _fmt([r["best_test_acc"] for r in runs])
-        gap_str   = _fmt([r["gap"]           for r in runs])
-        f1_str    = _fmt([r["test_metrics"]["macro_f1"] for r in runs])
+        layers  = runs[0]["config"].get("layers", [])
+        params  = f"{_params(layers):,}" if layers else "-"
+        acc_str = _fmt([r["best_val_acc"] for r in runs])
+        f1_str  = _fmt([r["macro_f1"] for r in runs])
 
-        e80_vals = [r["epochs_to_80"] for r in runs if r["epochs_to_80"]]
-        e85_vals = [r["epochs_to_85"] for r in runs if r["epochs_to_85"]]
-        e80 = f"{np.mean(e80_vals):.0f}" if e80_vals else "-"
-        e85 = f"{np.mean(e85_vals):.0f}" if e85_vals else "-"
-
-        print(
-            f"{name:<32}"
-            f" {train_str:>12}"
-            f" {test_str:>12}"
-            f" {best_str:>12}"
-            f" {gap_str:>6}"
-            f" {f1_str:>8}"
-            f" {e80:>6}"
-            f" {e85:>6}"
-        )
+        print(f"{name:<28} {params:>8} {acc_str:>13} {f1_str:>13}")
     print("=" * len(header))
-
-
-def print_perclass_summary(results):
-    """Per-class precision / recall / F1 table, one block per config group.
-
-    Rows: digits 0-9 + Macro-avg.
-    Columns: Precision, Recall, F1  (mean ± std across seeds).
-    """
-    groups = _group_results(results)
-    header = f"  {'Dígito':>6}  {'Precision':>13}  {'Recall':>13}  {'F1':>13}"
-    sep    = "  " + "-" * (len(header) - 2)
-
-    for name, runs in groups:
-        print(f"\n{'─' * len(header)}")
-        print(f"  {name}")
-        print(f"{'─' * len(header)}")
-        print(header)
-        print(sep)
-
-        n_classes = len(runs[0]["test_metrics"]["f1"])
-        for k in range(n_classes):
-            p_vals = [r["test_metrics"]["precision"][k] for r in runs]
-            r_vals = [r["test_metrics"]["recall"][k]    for r in runs]
-            f_vals = [r["test_metrics"]["f1"][k]        for r in runs]
-
-            def fmt(vals):
-                m, s = np.mean(vals), np.std(vals)
-                return f"{m:.2f} ± {s:.2f}" if len(runs) > 1 else f"{m:.2f}      "
-
-            digit = str(k) if k != 8 else "8 (absent)"
-            print(f"  {digit:>10}  {fmt(p_vals):>13}  {fmt(r_vals):>13}  {fmt(f_vals):>13}")
-
-        print(sep)
-        # Macro-avg
-        mp = [r["test_metrics"]["macro_precision"] for r in runs]
-        mr = [r["test_metrics"]["macro_recall"]    for r in runs]
-        mf = [r["test_metrics"]["macro_f1"]        for r in runs]
-
-        def fmt(vals):
-            m, s = np.mean(vals), np.std(vals)
-            return f"{m:.2f} ± {s:.2f}" if len(runs) > 1 else f"{m:.2f}      "
-
-        print(f"  {'Macro-avg':>10}  {fmt(mp):>13}  {fmt(mr):>13}  {fmt(mf):>13}")
-        print(f"{'─' * len(header)}")
 
 
 
@@ -315,20 +232,6 @@ def plot_confusion_matrix(cm, title="Confusion matrix", filename="confusion_matr
             ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=8,
                     color="white" if cm[i, j] > threshold else "black")
     fig.colorbar(im)
-    fig.tight_layout()
-    _save(fig, filename)
-
-
-def plot_loss_curve(errors, val_errors=None, title="Training loss", filename="loss_curve.png"):
-    fig, ax = plt.subplots(figsize=(8, 4))
-    epochs = range(1, len(errors) + 1)
-    ax.plot(epochs, errors, label="Train")
-    if val_errors:
-        ax.plot(range(1, len(val_errors) + 1), val_errors, label="Validation")
-        ax.legend()
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title(title)
     fig.tight_layout()
     _save(fig, filename)
 
@@ -480,3 +383,61 @@ def plot_per_class_metrics(metrics, title="Per-class metrics", filename="per_cla
     ax.legend()
     fig.tight_layout()
     _save(fig, filename)
+
+
+def plot_perclass_heatmap(results):
+    """Figure B: per-class metrics heatmap, one subplot per config group.
+
+    Layout: 10 rows (digits 0-9) × 3 columns (Precision, Recall, F1).
+    Each cell shows the mean value across seeds.
+    The figure caption reports the maximum std observed (hybrid approach).
+    """
+    groups    = _group_results(results)
+    n_groups  = len(groups)
+    metrics   = ["precision", "recall", "f1"]
+    col_labels = ["Precision", "Recall", "F1"]
+    row_labels = [str(k) if k != 8 else "8 (absent)" for k in range(10)]
+    cmap = LinearSegmentedColormap.from_list("metrics", ["#d73027", "#fee08b", "#1a9850"])
+
+    fig, axes = plt.subplots(1, n_groups, figsize=(4.5 * n_groups, 5.5))
+    if n_groups == 1:
+        axes = [axes]
+
+    max_std_overall = 0.0
+
+    for ax, (name, runs) in zip(axes, groups):
+        mean_mat = np.zeros((10, 3))
+        std_mat  = np.zeros((10, 3))
+        for j, metric in enumerate(metrics):
+            for k in range(10):
+                vals = [r["test_metrics"][metric][k] for r in runs]
+                mean_mat[k, j] = np.mean(vals)
+                std_mat[k, j]  = np.std(vals)
+
+        max_std_overall = max(max_std_overall, std_mat.max())
+
+        im = ax.imshow(mean_mat, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+
+        ax.set_xticks(range(3))
+        ax.set_xticklabels(col_labels, fontsize=9)
+        ax.set_yticks(range(10))
+        ax.set_yticklabels(row_labels, fontsize=8)
+        ax.set_title(name, fontsize=9)
+
+        for k in range(10):
+            for j in range(3):
+                v = mean_mat[k, j]
+                ax.text(j, k, f"{v:.2f}", ha="center", va="center", fontsize=8,
+                        color="white" if v < 0.35 or v > 0.80 else "black")
+
+        fig.colorbar(im, ax=ax, shrink=0.85, label="Score")
+
+    std_note = f"Max std across all cells: ±{max_std_overall:.3f}" if max_std_overall > 0 else ""
+    fig.suptitle(
+        "Per-class Precision / Recall / F1  (validation set)"
+        + (f"\n{std_note}" if std_note else ""),
+        fontsize=10
+    )
+    fig.tight_layout()
+    _save(fig, "perclass_heatmap.png")
+

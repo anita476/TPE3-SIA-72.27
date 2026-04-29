@@ -135,10 +135,11 @@ class MultiLayerPerceptron:
         indices = self.rng.permutation(X.shape[0])
         self._train_batch_epoch(X, y, indices)
 
-    def fit(self, X, y, X_val=None, y_val=None, val_labels=None, name=""):
+    def fit(self, X, y, X_val=None, y_val=None, val_labels=None, train_labels=None, name=""):
         self.errors_ = []
         self.val_errors_ = []
         self.val_accuracies_ = []
+        self.train_accuracies_ = []
         best_val_error = float("inf")
         epochs_no_improve = 0
 
@@ -148,6 +149,10 @@ class MultiLayerPerceptron:
             total_error = self._total_error(X, y)
             self.errors_.append(total_error)
 
+            if train_labels is not None:
+                train_preds = np.argmax(self.predict(X), axis=1)
+                self.train_accuracies_.append(float(np.mean(train_preds == train_labels)))
+
             if X_val is not None and y_val is not None:
                 val_error = self._total_error(X_val, y_val)
                 self.val_errors_.append(val_error)
@@ -156,7 +161,7 @@ class MultiLayerPerceptron:
                     val_preds = np.argmax(self.predict(X_val), axis=1)
                     self.val_accuracies_.append(np.mean(val_preds == val_labels))
 
-                print(f"[{name}] Epoch {epoch + 1}: train error = {total_error:.4f}  test error = {val_error:.4f}")
+                print(f"[{name}] Epoch {epoch + 1}: train error = {total_error:.4f}  validation error = {val_error:.4f}")
 
                 if self.patience > 0:
                     if val_error < best_val_error:
@@ -189,24 +194,6 @@ class MultiLayerPerceptron:
     def _total_error(self, X, y):
         predictions = self.predict(X)
         return 0.5 * np.sum((y - predictions) ** 2)
-
-    def compute_saliency(self, x, target_class):
-        """Gradient of output[target_class] w.r.t. each input pixel.
-        Positive value → pixel pushes prediction toward target_class.
-        Negative value → pixel pushes prediction away from target_class.
-        """
-        _, pre_acts = self._forward(x)
-
-        # Treat target_class output as if it were the only signal,
-        # then propagate that signal all the way back to the input.
-        e = np.zeros(self.layers[-1])
-        e[target_class] = 1.0
-        delta = e * self.g_prime(pre_acts[-1], self.beta)
-
-        for l in range(len(self.weights) - 2, -1, -1):
-            delta = (self.weights[l + 1].T @ delta) * self.g_prime(pre_acts[l], self.beta)
-
-        return self.weights[0].T @ delta   # shape (n_inputs,)
 
     # ------------------------------------------------------------------
     # Persistence

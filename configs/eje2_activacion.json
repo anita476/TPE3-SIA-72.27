@@ -1,0 +1,4 @@
+[
+  {"name": "tanh",     "layers": [784, 50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "tanh",     "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "seeds": [1, 2, 3]},
+  {"name": "logistic", "layers": [784, 50, 10], "lr": 0.01, "epochs": 250, "epsilon": 1e-6, "beta": 1.0, "activation": "logistic", "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "seeds": [1, 2, 3]}
+]

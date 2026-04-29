@@ -158,18 +158,7 @@ EXPERIMENTS = [
 | File | Contents |
 |------|---------|
 | `summary.csv` | One row per experiment: accuracy, F1, gap, convergence epoch |
-| `curves.csv` | One row per epoch per experiment: train loss, test loss, test accuracy |
-| `per_class.csv` | One row per class per split per experiment: precision, recall, F1, support |
 
 ### Plots saved to `plots/`
-
-| File | What it shows |
-|------|--------------|
-| `loss_curves.png` | Train and test loss over epochs, one line per experiment |
-| `accuracy_bars.png` | Train vs test accuracy per experiment |
-| `convergence.png` | Test accuracy % over epochs |
-| `confusion_matrices.png` | Confusion matrix per experiment |
-| `per_class_f1.png` | Heatmap: digit classes × experiments, color = F1 |
-| `summary_table.png` | Color-coded table of all key metrics |
 
 ---
