@@ -172,6 +172,15 @@ def _seed_curves(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return np.arange(1, n + 1), mean, std
 
 
+def _prefer_full_dataset(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    """Prefer no_split=True; fallback to all rows if that subset is empty."""
+    full = df[df["no_split"] == True]
+    if full.empty:
+        print(f"  aviso: no hay filas no_split=True en {source_name}; se usan todas las filas disponibles.")
+        return df
+    return full
+
+
 # =============================================================================
 # Q1a + Q1b — Curvas de aprendizaje (dataset completo)
 # Q1a: underfitting -> MSE se estabiliza en un valor alto
@@ -180,39 +189,46 @@ def _seed_curves(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
     print("Q1a+Q1b — curvas de aprendizaje ...")
-    full = summary[summary["no_split"] == True]
-    c    = curves[curves["no_split"] == True]
-    activations = sorted(c["activation"].unique())
+    full = _prefer_full_dataset(summary, "summary")
+    c    = _prefer_full_dataset(curves, "curves")
+
+    activations = sorted(c["activation"].dropna().unique())
+    if not activations:
+        print("  aviso: no hay activaciones disponibles para Q1a+Q1b; se omite este gráfico.")
+        return
     n = len(activations)
 
-    # Pre-calcular todas las curvas para determinar el ylim sin el transitorio inicial
+    # Pre-calcular curvas para determinar ylim y evitar recomputar en el loop de dibujo
     all_curve_data: dict[tuple, tuple] = {}
     for act in activations:
         for mt in ["linear", "non-linear"]:
-            best = _best_lr(full, mt, act)
-            sub  = c[(c["activation"] == act) & (c["model_type"] == mt) &
-                     (c["lr"] == best)]
-            all_curve_data[(act, mt)] = (_best_lr(full, mt, act), *_seed_curves(sub))
+            sub_full = full[(full["model_type"] == mt) & (full["activation"] == act)]
+            if sub_full.empty:
+                all_curve_data[(act, mt)] = (np.nan, np.array([]), np.array([]), np.array([]), 0)
+                continue
+            best = float(sub_full.groupby("lr")["roc_auc"].mean().idxmax())
+            sub = c[(c["activation"] == act) & (c["model_type"] == mt) & (c["lr"] == best)]
+            xs, mean, std = _seed_curves(sub)
+            n_seeds = int(sub["seed"].nunique()) if not sub.empty else 0
+            all_curve_data[(act, mt)] = (best, xs, mean, std, n_seeds)
 
     # y_cap: maximo de (media + desvio) despues de la epoca 30, en todas las curvas
     stable_vals: list[float] = []
-    for (act, mt), (best, xs, mean, std) in all_curve_data.items():
+    for _, (_, xs, mean, std, _) in all_curve_data.items():
         if xs.size > 30:
             stable_vals.extend((mean[30:] + std[30:]).tolist())
     y_cap = float(np.percentile(stable_vals, 99)) * 1.35 if stable_vals else 0.1
 
     with plt.rc_context(PLOT_RC):
-        fig, axes = plt.subplots(1, n, figsize=(FIG_SIZE[0], FIG_SIZE[1]),
-                                  sharey=True)
+        fig, axes = plt.subplots(1, n, figsize=(FIG_SIZE[0], FIG_SIZE[1]), sharey=True)
         if n == 1:
             axes = [axes]
 
         for ax, act in zip(axes, activations):
             for mt in ["linear", "non-linear"]:
-                best, xs, mean, std = all_curve_data[(act, mt)]
+                best, xs, mean, std, n_seeds = all_curve_data[(act, mt)]
                 if xs.size == 0:
                     continue
-                n_seeds = sub["seed"].nunique()
                 ax.plot(xs, mean, color=COLORS_MT[mt], linewidth=2,
                         label=f"{LABEL_MT[mt]}  (lr={best}, n={n_seeds})")
                 ax.fill_between(xs, np.maximum(mean - std, 0), mean + std,
@@ -220,10 +236,10 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
 
             ax.set_title(f"Activaci\u00f3n: {LABEL_ACT.get(act, act)}", fontsize=11)
             ax.set_xlabel("\u00c9poca")
-            ax.legend(fontsize=8)
+            if ax.lines:
+                ax.legend(fontsize=8)
             ax.xaxis.set_major_locator(MaxNLocator(6, integer=True))
 
-        # Aplicar ylim tras el loop (sharey comparte entre paneles)
         axes[0].set_ylim(bottom=0, top=y_cap)
         axes[0].set_ylabel("MSE de entrenamiento  (media \u00b1 desv\u00edo, 10 semillas)")
         fig.suptitle(
@@ -244,10 +260,13 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
 
 def plot_q1ab_lr(summary: pd.DataFrame) -> None:
     print("Q1a+Q1b — sensibilidad al learning rate ...")
-    full = summary[summary["no_split"] == True]
-    activations = sorted(full["activation"].unique())
-    lrs = sorted(full["lr"].unique())
+    full = _prefer_full_dataset(summary, "summary")
+    activations = sorted(full["activation"].dropna().unique())
+    lrs = sorted(full["lr"].dropna().unique())
     n = len(activations)
+    if n == 0 or len(lrs) == 0:
+        print("  aviso: no hay activaciones o learning rates para Q1a+Q1b LR; se omite este gráfico.")
+        return
 
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, n, figsize=(FIG_SIZE[0], FIG_SIZE[1]),
@@ -377,7 +396,10 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
 def plot_q1c(summary: pd.DataFrame) -> None:
     """Genera dos gráficos separados para Q1c: ROC-AUC y MSE final."""
     print("Q1c — capacidad de aprendizaje ...")
-    full = summary[summary["no_split"] == True]
+    full = _prefer_full_dataset(summary, "summary")
+    if full.empty:
+        print("  aviso: no hay datos para Q1c; se omiten estos gráficos.")
+        return
 
     _plot_q1c_panel(
         full,
