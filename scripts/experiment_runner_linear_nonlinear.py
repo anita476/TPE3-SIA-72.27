@@ -187,6 +187,8 @@ def run_single(job: tuple[dict, str]) -> dict:
         "sgd",      # optimizer
     )
 
+    act_name = str(base.get("activation", "tanh"))
+
     t0 = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
         perceptron.fit(X_train, y_train)
@@ -194,6 +196,19 @@ def run_single(job: tuple[dict, str]) -> dict:
 
     train_preds = perceptron.predict(X_train)
     test_preds  = perceptron.predict(X_test)
+
+    # NORMALIZATION FOR COMPARISONS
+    if model_type == "non-linear" and act_name == "tanh":
+        train_preds = (train_preds + 1) / 2
+        test_preds = (test_preds + 1) / 2
+    elif model_type == "linear":
+        pred_min = train_preds.min()
+        pred_max = train_preds.max()
+        rng = pred_max - pred_min
+        if rng > 1e-8:
+            train_preds = (train_preds - pred_min) / rng
+            test_preds = (test_preds - pred_min) / rng
+        # if rng is tiny the model collapsed — leave as-is, metrics will reflect that
 
     train_acc, _, _       = _metrics_float(y_train, train_preds, tolerance)
     test_acc, mae, mse    = _metrics_float(y_test,  test_preds,  tolerance)
@@ -261,7 +276,6 @@ def run_single(job: tuple[dict, str]) -> dict:
 
     run_id   = _make_run_id(base, model_type, seed)
     data_bn  = os.path.basename(data_path)
-    act_name = str(base.get("activation", "tanh"))
     tp_val   = float(tp_raw) if tp_raw is not None else math.nan
 
     def _r(v: float) -> float:

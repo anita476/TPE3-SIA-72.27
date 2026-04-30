@@ -22,7 +22,7 @@ from utils.visualization import (
 )
 
 MODELS_DIR = "results/models"
-TRAIN_PATH = "datasets/digits.csv"
+TRAIN_PATH = "data/digits.csv"
 SEED       = 1   # must match experiment_runner_digits.py
 
 

@@ -10,8 +10,8 @@ from perceptrons.MultiLayerPerceptron import MultiLayerPerceptron
 from utils.metrics import compute_metrics
 from utils.visualization import plot_confusion_matrix, plot_loss_curve, plot_per_class_metrics
 
-DIGITS_TRAIN_PATH = "datasets/digits.csv"
-DIGITS_TEST_PATH = "datasets/digits_test.csv"
+DIGITS_TRAIN_PATH = "data/digits.csv"
+DIGITS_TEST_PATH = "data/digits_test.csv"
 OFF_TARGET_BY_ACTIVATION = {"logistic": 0.0, "tanh": -1.0}
 
 

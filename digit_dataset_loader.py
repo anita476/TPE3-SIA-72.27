@@ -29,5 +29,5 @@ def plot_sample(row: pd.Series) -> None:
 
 
 if __name__ == "__main__":
-    df = load_dataset("datasets/digits_test.csv")
+    df = load_dataset("data/digits_test.csv")
     plot_sample(df.iloc[0])
