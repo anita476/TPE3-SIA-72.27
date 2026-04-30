@@ -189,9 +189,15 @@ def run_single(job: tuple[dict, str]) -> dict:
 
     act_name = str(base.get("activation", "tanh"))
 
+    # normalize labels if its tanh so that it works
+    if model_type == "non-linear" and act_name == "tanh":
+        y_train_fit = 2 * y_train - 1  # [-1, 1] to match tanh range
+    else:
+        y_train_fit = y_train
+
     t0 = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
-        perceptron.fit(X_train, y_train)
+        perceptron.fit(X_train, y_train_fit)
     elapsed_seconds = time.perf_counter() - t0
 
     train_preds = perceptron.predict(X_train)
