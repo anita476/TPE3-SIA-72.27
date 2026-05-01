@@ -7,27 +7,25 @@ from utils.optimizers import build_optimizer
 def _tanh(h, beta=1.0):
     return np.tanh(beta * h)
 
-# Calculates tanh again so it uses h and not g(h).
-def _tanh_derivative(h, beta=1.0):
-    return beta * (1 - np.tanh(beta * h)**2)
+def _tanh_derivative(g_h, beta=1.0):
+    return beta * (1 - g_h ** 2)
 
 def _logistic(h, beta=1.0):
     return 1.0 / (1.0 + np.exp(-2 * beta * h))
 
-def _logistic_derivative(h, beta=1.0):
-    g_h = _logistic(h, beta)
+def _logistic_derivative(g_h, beta=1.0):
     return 2 * beta * g_h * (1 - g_h)
 
 ACTIVATIONS = {
     "tanh": (_tanh, _tanh_derivative),
     "logistic": (_logistic, _logistic_derivative),
 }
-TRAINING_MODES = {"online", "minibatch"}
+TRAINING_MODES = {"online", "minibatch", "batch"}
 
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd", weight_decay=0.0, patience=0):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd", weight_decay=0.0, patience=0, min_delta=0.0):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
         if activation not in ACTIVATIONS:
@@ -45,13 +43,16 @@ class MultiLayerPerceptron:
         self.beta = beta
         self.activation = activation
         self.g, self.g_prime = ACTIVATIONS[activation]
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.training_mode = training_mode
         self.batch_size = int(batch_size)
         self.weight_decay = weight_decay
         self.patience = patience
+        self.min_delta = min_delta
         self._optimizer_name = optimizer
         self.optimizer = build_optimizer(optimizer, learning_rate)
+        self.initializer = initializer
         init = build_initializer(initializer)
 
         # One weight matrix per connection between consecutive layers.
@@ -77,33 +78,27 @@ class MultiLayerPerceptron:
         """Vectorized forward pass for a batch X of shape (n, fan_in).
 
         Returns:
-            activations     – list of (n, layer_size) arrays; [0] is the input.
-            pre_activations – list of (n, layer_size) arrays; h values before g().
+            activations – list of (n, layer_size) arrays; [0] is the input.
         """
         activations = [np.asarray(X, dtype=float)]
-        pre_activations = []
         for W, b in zip(self.weights, self.biases):
-            h = activations[-1] @ W.T + b   # (n, fan_out)
-            pre_activations.append(h)
-            activations.append(self.g(h, self.beta))
-        return activations, pre_activations
+            activations.append(self.g(activations[-1] @ W.T + b, self.beta))
+        return activations
 
     def _forward(self, x):
-        """Single-sample forward pass (kept for compute_saliency)."""
+        """Single-sample forward pass."""
         activations = [np.asarray(x, dtype=float)]
-        pre_activations = []
         for W, b in zip(self.weights, self.biases):
-            h = W @ activations[-1] + b
-            pre_activations.append(h)
-            activations.append(self.g(h, self.beta))
-        return activations, pre_activations
+            activations.append(self.g(W @ activations[-1] + b, self.beta))
+        return activations
 
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
 
     def _effective_batch_size(self, n_samples):
-        if self._optimizer_name == "gd":
+        # "gd" optimizer name is treated as an alias for full-batch regardless of training_mode.
+        if self._optimizer_name == "gd" or self.training_mode == "batch":
             return max(1, n_samples)
         return 1 if self.training_mode == "online" else self.batch_size
 
@@ -116,21 +111,21 @@ class MultiLayerPerceptron:
             y_batch = y[batch_idx]   # (n, output_size)
             n = len(batch_idx)
 
-            activations, pre_activations = self._forward_batch(X_batch)
+            activations = self._forward_batch(X_batch)
 
             # --- Vectorized backward pass ---
             dW = [None] * len(self.weights)
             db = [None] * len(self.biases)
 
-            # Output layer: δ = (ŷ − y) ⊙ g'(h),  shape (n, output_size)
-            delta = (activations[-1] - y_batch) * self.g_prime(pre_activations[-1], self.beta)
+            # Output layer: δ = (ŷ − y) ⊙ g'(g(h)),  shape (n, output_size)
+            delta = (activations[-1] - y_batch) * self.g_prime(activations[-1], self.beta)
             # dW = (1/n) δᵀ A_prev + λW,  shape (fan_out, fan_in) = W shape
             dW[-1] = delta.T @ activations[-2] / n + self.weight_decay * self.weights[-1]
             db[-1] = delta.mean(axis=0)
 
             # Hidden layers: propagate δ backwards
             for l in range(len(self.weights) - 2, -1, -1):
-                delta = (delta @ self.weights[l + 1]) * self.g_prime(pre_activations[l], self.beta)
+                delta = (delta @ self.weights[l + 1]) * self.g_prime(activations[l + 1], self.beta)
                 dW[l] = delta.T @ activations[l] / n + self.weight_decay * self.weights[l]
                 db[l] = delta.mean(axis=0)
 
@@ -145,8 +140,11 @@ class MultiLayerPerceptron:
         self.val_errors_ = []
         self.val_accuracies_ = []
         self.train_accuracies_ = []
-        best_val_error = float("inf")
+        best_val_acc      = -1.0
+        best_weights      = None
+        best_biases       = None
         epochs_no_improve = 0
+        stop_reason       = "max_epochs"
 
         for epoch in range(self.epochs):
             self.train_epoch(X, y)
@@ -158,31 +156,50 @@ class MultiLayerPerceptron:
                 train_preds = np.argmax(self.predict(X), axis=1)
                 self.train_accuracies_.append(float(np.mean(train_preds == train_labels)))
 
+            val_acc = None
             if X_val is not None and y_val is not None:
                 val_error = self._total_error(X_val, y_val)
                 self.val_errors_.append(val_error)
-
                 if val_labels is not None:
                     val_preds = np.argmax(self.predict(X_val), axis=1)
-                    self.val_accuracies_.append(np.mean(val_preds == val_labels))
-
-                print(f"[{name}] Epoch {epoch + 1}: train error = {total_error:.4f}  validation error = {val_error:.4f}")
-
-                if self.patience > 0:
-                    if val_error < best_val_error:
-                        best_val_error = val_error
-                        epochs_no_improve = 0
-                    else:
-                        epochs_no_improve += 1
-                    if epochs_no_improve >= self.patience:
-                        print(f"[{name}] Early stopping at epoch {epoch + 1}")
-                        break
+                    val_acc = float(np.mean(val_preds == val_labels))
+                    self.val_accuracies_.append(val_acc)
+                print(f"[{name}] Epoch {epoch + 1}: train error = {total_error:.4f}  val error = {val_error:.4f}")
             else:
                 print(f"[{name}] Epoch {epoch + 1}: total error = {total_error:.4f}")
 
+            # --- Track best weights (always, when we have a val_acc signal) ---
+            if self.patience > 0 and val_acc is not None:
+                if val_acc > best_val_acc + self.min_delta:
+                    best_val_acc = val_acc
+                    best_weights = [W.copy() for W in self.weights]
+                    best_biases  = [b.copy() for b in self.biases]
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+
+            # --- Stopping condition 1: error threshold ---
             if total_error < self.epsilon:
-                print(f"[{name}] Converged at epoch {epoch + 1}")
+                stop_reason = "epsilon"
+                print(f"[{name}] Converged at epoch {epoch + 1} (train error < {self.epsilon})")
                 break
+
+            # --- Stopping condition 2: patience ---
+            if self.patience > 0 and epochs_no_improve >= self.patience:
+                stop_reason = "patience"
+                print(f"[{name}] Early stopping at epoch {epoch + 1} "
+                      f"(no improvement for {self.patience} epochs, best val_acc={best_val_acc:.4f})")
+                break
+        else:
+            print(f"[{name}] Reached max epochs ({self.epochs})")
+
+        # --- Restore best weights if we tracked them ---
+        if best_weights is not None:
+            self.weights = best_weights
+            self.biases  = best_biases
+            print(f"[{name}] Restored best weights (val_acc={best_val_acc:.4f}, stop={stop_reason})")
+
+        self.stop_reason_ = stop_reason
 
     # ------------------------------------------------------------------
     # Inference
@@ -198,14 +215,16 @@ class MultiLayerPerceptron:
 
     def _total_error(self, X, y):
         predictions = self.predict(X)
-        return 0.5 * np.sum((y - predictions) ** 2)
+        return 0.5 * np.mean((y - predictions) ** 2)
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
     def save(self, path):
-        """Save weights, biases, and hyperparameters to a .npz file."""
+        """Save weights, biases, and hyperparameters to a .npz file.
+        Also writes a human-readable .json sidecar with config + training history.
+        """
         config = {
             "layers":        self.layers,
             "learning_rate": self.learning_rate,
@@ -218,6 +237,9 @@ class MultiLayerPerceptron:
             "weight_decay":  self.weight_decay,
             "patience":      self.patience,
             "optimizer":     self._optimizer_name,
+            "initializer":   self.initializer,
+            "seed":          self.seed,
+            "min_delta":     self.min_delta,
         }
         arrays = {f"W{i}": W for i, W in enumerate(self.weights)}
         arrays.update({f"b{i}": b for i, b in enumerate(self.biases)})
@@ -231,6 +253,18 @@ class MultiLayerPerceptron:
         np.savez(path, **arrays)
         print(f"Model saved → {path}.npz")
 
+        # JSON sidecar
+        json_path = (path[:-4] if path.endswith(".npz") else path) + ".json"
+        sidecar = {"config": config}
+        if hasattr(self, "errors_"):
+            sidecar["train_loss"] = self.errors_
+            sidecar["val_loss"]   = self.val_errors_
+            sidecar["val_acc"]    = [float(v) for v in self.val_accuracies_]
+            sidecar["train_acc"]  = [float(v) for v in self.train_accuracies_]
+        with open(json_path, "w") as f:
+            json.dump(sidecar, f, indent=2)
+        print(f"Sidecar saved → {json_path}")
+
     @classmethod
     def load(cls, path, seed=0):
         """Load a model from a .npz file produced by save()."""
@@ -242,14 +276,16 @@ class MultiLayerPerceptron:
             learning_rate=config["learning_rate"],
             epochs=config["epochs"],
             epsilon=config["epsilon"],
-            seed=seed,
+            seed=config.get("seed", seed),
             beta=config["beta"],
             activation=config["activation"],
             training_mode=config.get("training_mode", "online"),
             batch_size=config.get("batch_size", 1),
             optimizer=config.get("optimizer", "sgd"),
+            initializer=config.get("initializer", "-"),
             weight_decay=config.get("weight_decay", 0.0),
             patience=config.get("patience", 0),
+            min_delta=config.get("min_delta", 0.0),
         )
         n = len(config["layers"]) - 1
         model.weights = [data[f"W{i}"] for i in range(n)]
@@ -257,8 +293,8 @@ class MultiLayerPerceptron:
         # Restore training history if present
         if "_train_loss" in data:
             model.errors_           = data["_train_loss"].tolist()
-            model.val_errors_       = data["_val_loss"].tolist()
-            model.val_accuracies_   = data["_val_acc"].tolist()
+            model.val_errors_       = data["_val_loss"].tolist()  if "_val_loss"  in data else []
+            model.val_accuracies_   = data["_val_acc"].tolist()   if "_val_acc"   in data else []
             model.train_accuracies_ = data["_train_acc"].tolist() if "_train_acc" in data else []
         print(f"Model loaded ← {p}")
         return model
