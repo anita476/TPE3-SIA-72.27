@@ -94,8 +94,8 @@ def run_experiment(config, X_train, train_labels, X_eval, eval_labels):
 
     eval_metrics = compute_metrics(eval_labels, eval_preds)
 
-    train_loss = [e / len(X_train) for e in mlp.errors_]
-    val_loss   = [e / len(X_eval)  for e in mlp.val_errors_]
+    train_loss = list(mlp.errors_)
+    val_loss   = list(mlp.val_errors_)
 
     stop_reason = getattr(mlp, "stop_reason_", "max_epochs")
     stop_epoch  = len(mlp.errors_)
