@@ -1,0 +1,20 @@
+{
+  "base": {
+    "name": "fraud",
+    "data": "../data/fraud_dataset.csv",
+    "label": "flagged_fraud",
+    "epochs": 1000,
+    "epsilon": 0.01,
+    "tolerance": 0.5,
+    "normalize": "standard",
+    "beta": 1.0
+  },
+  "grid": {
+    "test_per": [null],
+    "lr": [0.0001,0.01,0.03],
+    "lr_linear":    [0.001,0.01],
+    "lr_nonlinear": [0.01,0.03,0.1],
+    "seed":     [1],
+    "activation": ["tanh", "logistic"]
+  }
+}

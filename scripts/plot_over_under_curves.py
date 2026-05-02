@@ -47,8 +47,8 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_CURVES_CSV  = os.path.join("results", "linear_vs_nonlinear_curves.csv")
-DEFAULT_FITTING_CSV = os.path.join("results", "linear_vs_nonlinear_fitting_curves.csv")
+DEFAULT_CURVES_CSV  = os.path.join("../results", "linear_vs_nonlinear_curves.csv")
+DEFAULT_FITTING_CSV = os.path.join("../results", "linear_vs_nonlinear_fitting_curves.csv")
 DEFAULT_OUT_DIR     = os.path.join("plots")
 
 # Colour palette — one colour per LR (cycles if more LRs than colours)

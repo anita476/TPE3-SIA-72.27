@@ -3,16 +3,16 @@
     "name": "fraud",
     "data": "data/fraud_dataset.csv",
     "label": "flagged_fraud",
-    "epochs": 500,
+    "epochs": 1000,
     "epsilon": 0.01,
     "tolerance": 0.5,
     "normalize": "standard",
     "beta": 1.0
   },
   "grid": {
-    "test_per": [0.20],
+    "test_per": [null, 0.10, 0.15, 0.20, 0.25, 0.30],
     "lr":       [0.0001, 0.001, 0.01, 0.03, 0.1],
-    "seed":     [1, 2, 3, 4, 5],
+    "seed":     [10],
     "activation": ["tanh", "logistic", "relu"]
   }
 }

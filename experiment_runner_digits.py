@@ -12,7 +12,7 @@ from utils.visualization import print_summary, plot_accuracy_bars, plot_val_accu
 RESULTS_DIR = "results"
 MODELS_DIR  = os.path.join(RESULTS_DIR, "models")
 
-TRAIN_PATH = "datasets/digits.csv"
+TRAIN_PATH = "data/digits.csv"
 SEED       = 1
 VALID_OPTIMIZERS = {"gd", "sgd", "rmsprop", "adam"}
 OFF_TARGET_BY_ACTIVATION = {"logistic": 0.0, "tanh": -1.0}

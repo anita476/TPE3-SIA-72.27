@@ -39,7 +39,7 @@ from utils.test_data_split import stratified_split_regression
 ROOT = _ROOT
 DEFAULT_CONFIG = ROOT / "configs" / "linear_vs_nonlinear_fraud.json"
 
-RESULTS_DIR        = os.path.join("results")
+RESULTS_DIR        = os.path.join("../results")
 SUMMARY_CSV        = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_summary.csv")
 CONFUSION_CSV      = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_confusion_runs.csv")
 CURVES_CSV         = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_curves.csv")
@@ -214,14 +214,6 @@ def run_single(job: tuple[dict, str]) -> dict:
     if model_type == "non-linear" and act_name == "tanh":
         train_preds = (train_preds + 1) / 2
         test_preds = (test_preds + 1) / 2
-    elif model_type == "linear":
-        pred_min = train_preds.min()
-        pred_max = train_preds.max()
-        rng = pred_max - pred_min
-        if rng > 1e-8:
-            train_preds = (train_preds - pred_min) / rng
-            test_preds = (test_preds - pred_min) / rng
-        # if rng is tiny the model collapsed — leave as-is, metrics will reflect that
 
     train_acc, _, _       = _metrics_float(y_train, train_preds, tolerance)
     test_acc, mae, mse    = _metrics_float(y_test,  test_preds,  tolerance)
@@ -471,6 +463,7 @@ def run_single(job: tuple[dict, str]) -> dict:
                 "recall":     round(float(rec),     6),
             })
 
+    print("Finished job")
     return {
         "summary":           summary_row,
         "cm_rows":           cm_rows,
