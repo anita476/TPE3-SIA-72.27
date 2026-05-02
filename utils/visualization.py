@@ -251,7 +251,7 @@ def print_summary(results):
         def _fmt(vals, pct=True):
             m = np.mean(vals) * (100 if pct else 1)
             s = np.std(vals)  * (100 if pct else 1)
-            return f"{m:5.1f}±{s:.1f}%" if len(runs) > 1 else f"{m:5.1f}%"
+            return f"{m:5.1f}±{s:.1f}%"
 
         layers  = runs[0]["config"].get("layers", [])
         params  = f"{_params(layers):,}" if layers else "-"

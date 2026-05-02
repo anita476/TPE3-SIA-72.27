@@ -217,3 +217,9 @@ plots/
 *.csv
 results/models
 utils/visualization.py
+export_jsons.py
+plot_class_distribution.py
+plot_initializer_comparison.py
+plot_seed_dispersion.py
+scripts/simulate_early_stopping.py
+a.html
