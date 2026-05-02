@@ -1,0 +1,8 @@
+[
+  {"name": "[784,10]", "layers": [784, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "activation": "logistic", "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "patience": 20, "min_delta": 0.0001, "seeds": [1, 2, 3]},
+  {"name": "[784,100,10]",  "layers": [784, 100, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "activation": "logistic", "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "patience": 20, "min_delta": 0.0001, "seeds": [1, 2, 3]},
+  {"name": "[784,100,100,10]",  "layers": [784, 100, 100, 10], "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "activation": "logistic", "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "patience": 20, "min_delta": 0.0001, "seeds": [1, 2, 3]},
+  {"name": "[784,200,100,10]",   "layers": [784, 200, 100, 10],  "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "activation": "logistic", "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "patience": 20, "min_delta": 0.0001, "seeds": [1, 2, 3]},
+  {"name": "[784,400,300,200,100,10]",      "layers": [784, 400, 300, 200, 100, 10],      "lr": 0.1, "epochs": 500, "epsilon": 1e-6, "beta": 1.0, "activation": "logistic", "initializer": "xavier", "training_mode": "online", "batch_size": 1, "optimizer": "sgd", "patience": 20, "min_delta": 0.0001, "seeds": [1, 2, 3]}
+]
+
