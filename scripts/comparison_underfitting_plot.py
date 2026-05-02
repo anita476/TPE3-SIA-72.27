@@ -113,18 +113,21 @@ def load(path: str | Path) -> pd.DataFrame:
 def average_over_seeds(df: pd.DataFrame) -> pd.DataFrame:
     """
     Average MSE and BCE over seeds for each (model, activation, lr, epoch).
-    This smooths out initialisation noise without hiding learning dynamics.
+    Also computes std columns (train_mse_std, train_bce_std) for confidence bands.
+    ddof=0 (population std) avoids NaN when only one seed is present.
     """
     group_cols = ["model", "activation", "lr", "epoch"]
     numeric = ["train_mse", "train_bce"]
     existing = [c for c in numeric if c in df.columns]
 
-    agg = (
-        df.groupby(group_cols, sort=False)[existing]
-        .mean()
-        .reset_index()
-    )
-    return agg
+    grp     = df.groupby(group_cols, sort=False)[existing]
+    mean_df = grp.mean().reset_index()
+    std_df  = grp.std(ddof=0).reset_index()
+
+    for col in existing:
+        mean_df[f"{col}_std"] = std_df[col].values
+
+    return mean_df
 
 
 def configs(df: pd.DataFrame) -> list[pd.DataFrame]:
@@ -141,20 +144,34 @@ def plot_metric(
     col: str,
     ylabel: str,
     log_scale: bool = False,
+    show_std: bool = True,
 ):
+    std_col = f"{col}_std"
     for cfg in all_configs:
         if col not in cfg.columns or cfg[col].isna().all():
             continue
-        row0 = cfg.iloc[0]
+        row0  = cfg.iloc[0]
         key   = palette_key(row0)
         label = group_label(row0)
         color = config_color(row0)
         ls    = LINESTYLE.get(key, (0, ()))
+
         ax.plot(
             cfg["epoch"], cfg[col],
             color=color, linestyle=ls, linewidth=1.6,
             label=label, alpha=0.9,
         )
+
+        # ±1 std shaded band — only rendered when std > 0 (i.e. multiple seeds)
+        if show_std and std_col in cfg.columns:
+            std = cfg[std_col].fillna(0)
+            if std.abs().max() > 0:
+                ax.fill_between(
+                    cfg["epoch"],
+                    cfg[col] - std,
+                    cfg[col] + std,
+                    color=color, alpha=0.18, linewidth=0,
+                )
 
     ax.set_xlabel("Epoch")
     ax.set_ylabel(ylabel)
@@ -165,36 +182,48 @@ def plot_metric(
     ax.legend(loc="upper right", ncol=1)
 
 
-def final_value_bars(ax: plt.Axes, all_configs: list[pd.DataFrame], col: str, title: str):
-    """Bar chart of the final-epoch value for each config."""
-    labels, values, colors = [], [], []
+def final_value_bars(ax: plt.Axes, all_configs: list[pd.DataFrame], col: str, title: str,
+                     show_std: bool = True):
+    """Bar chart of the final-epoch value for each config, with optional std error bars."""
+    std_col = f"{col}_std"
+    labels, values, errors, colors = [], [], [], []
     for cfg in all_configs:
         if col not in cfg.columns or cfg[col].isna().all():
             continue
-        row0  = cfg.iloc[0]
-        final = cfg.iloc[-1][col]
+        row0      = cfg.iloc[0]
+        final_row = cfg.iloc[-1]
         labels.append(group_label(row0))
-        values.append(final)
+        values.append(final_row[col])
+        errors.append(float(final_row[std_col]) if (show_std and std_col in cfg.columns) else 0.0)
         colors.append(config_color(row0))
 
     if not labels:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return
 
-    x = np.arange(len(labels))
+    x    = np.arange(len(labels))
     bars = ax.bar(x, values, color=colors, width=0.55, zorder=3)
+
+    has_error = show_std and any(e > 0 for e in errors)
+    if has_error:
+        ax.errorbar(
+            x, values, yerr=errors,
+            fmt="none", ecolor="#333333", elinewidth=1.2,
+            capsize=4, capthick=1.2, zorder=4,
+        )
+
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
     ax.set_ylabel(f"Final {col.upper()}")
     ax.set_title(title, pad=10)
 
-    # value annotations
-    for bar, val in zip(bars, values):
+    for bar, val, err in zip(bars, values, errors):
+        label_text = f"{val:.4f}" if not (has_error and err > 0) else f"{val:.4f}\n±{err:.4f}"
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() * 1.02,
-            f"{val:.4f}",
-            ha="center", va="bottom", fontsize=8,
+            label_text,
+            ha="center", va="bottom", fontsize=7,
         )
 
 
@@ -222,11 +251,14 @@ def main():
     parser.add_argument("--linear",    default=None, help="Path to linear curves CSV")
     parser.add_argument("--nonlinear", default=None, help="Path to non-linear curves CSV")
     parser.add_argument("--log",       action="store_true", help="Use log scale on y-axis")
+    parser.add_argument("--no-std",    action="store_true", help="Hide ±1 std bands and error bars")
     parser.add_argument("--out",       default="results/plots", help="Output directory")
     args = parser.parse_args()
 
     if not args.linear and not args.nonlinear:
         parser.error("Provide at least one of --linear or --nonlinear.")
+
+    show_std = not args.no_std
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -259,11 +291,11 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=False)
     fig.suptitle("Training MSE — linear vs non-linear perceptron", fontsize=14, y=1.01)
 
-    plot_metric(axes[0], all_cfgs, "train_mse", "MSE", log_scale=args.log)
+    plot_metric(axes[0], all_cfgs, "train_mse", "MSE", log_scale=args.log, show_std=show_std)
     axes[0].set_title("Learning curves (MSE)")
     annotate_underfitting(axes[0], all_cfgs, "train_mse")
 
-    final_value_bars(axes[1], all_cfgs, "train_mse", "Final MSE per config")
+    final_value_bars(axes[1], all_cfgs, "train_mse", "Final MSE per config", show_std=show_std)
 
     fig.tight_layout()
     p = out_dir / "learning_curves_mse.png"
@@ -275,11 +307,11 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=False)
     fig.suptitle("Training BCE — linear vs non-linear perceptron", fontsize=14, y=1.01)
 
-    plot_metric(axes[0], all_cfgs, "train_bce", "BCE", log_scale=args.log)
+    plot_metric(axes[0], all_cfgs, "train_bce", "BCE", log_scale=args.log, show_std=show_std)
     axes[0].set_title("Learning curves (BCE)")
     annotate_underfitting(axes[0], all_cfgs, "train_bce")
 
-    final_value_bars(axes[1], all_cfgs, "train_bce", "Final BCE per config")
+    final_value_bars(axes[1], all_cfgs, "train_bce", "Final BCE per config", show_std=show_std)
 
     fig.tight_layout()
     p = out_dir / "learning_curves_bce.png"

@@ -29,8 +29,10 @@ If only "lr" is present it is shared by both.
 import argparse
 import csv
 import json
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import product
 from pathlib import Path
 
@@ -169,9 +171,44 @@ def fit_and_record(
     return rows
 
 
-# ── runner ───────────────────────────────────────────────────────────────────
+# ── parallel worker functions ────────────────────────────────────────────────
+# These must be module-level (not closures) so ProcessPoolExecutor can pickle them.
 
-def run(config_path: str) -> None:
+def _run_linear_job(args_tuple):
+    """Worker: train one (seed, lr) linear job. Returns list of row dicts."""
+    seed, lr, X, y, epochs, epsilon = args_tuple
+    model = SimpleLinearPerceptron(
+        learning_rate=lr,
+        epochs=epochs,
+        epsilon=epsilon,
+        seed=seed,
+    )
+    t0   = time.time()
+    rows = fit_and_record(model, X, y, epochs, epsilon, activation="logistic")
+    elapsed = time.time() - t0
+    return seed, lr, rows, elapsed
+
+
+def _run_nonlinear_job(args_tuple):
+    """Worker: train one (seed, lr, activation) nonlinear job. Returns list of row dicts."""
+    seed, lr, activation, beta, X, y, epochs, epsilon = args_tuple
+    model = SimpleNonLinearPerceptron(
+        learning_rate=lr,
+        epochs=epochs,
+        epsilon=epsilon,
+        seed=seed,
+        activation=activation,
+        beta=beta,
+    )
+    t0   = time.time()
+    rows = fit_and_record(model, X, y, epochs, epsilon, activation=activation)
+    elapsed = time.time() - t0
+    return seed, lr, activation, rows, elapsed
+
+
+
+
+def run(config_path: str, outpath: str,workers: int) -> None:
     with open(config_path) as f:
         cfg = json.load(f)
 
@@ -196,7 +233,7 @@ def run(config_path: str) -> None:
         f"label='{base['label']}' | fraud rate={y.mean()*100:.2f}%\n"
     )
 
-    out_dir = Path("results")
+    out_dir = Path(outpath)
     out_dir.mkdir(exist_ok=True)
     name = base.get("name", "experiment")
 
@@ -206,34 +243,39 @@ def run(config_path: str) -> None:
     total_lin = len(seeds) * len(lr_linear)
     total_nln = len(seeds) * len(lr_nonlinear) * len(activations)
 
+    # Cap workers to the number of CPUs available
+    max_workers = min(workers, os.cpu_count() or 1)
+
     print("=" * 60)
     print(f"  Training on FULL dataset (no val split)")
     print(f"  LINEAR experiments    : {total_lin}")
     print(f"  NON-LINEAR experiments: {total_nln}")
+    print(f"  Workers               : {max_workers}")
     print("=" * 60)
 
     # ── LINEAR ──────────────────────────────────────────────────────────────
     print("\n── Linear perceptron ───────────────────────────────────────────")
     lin_fields = ["model", "seed", "lr", "epoch", "train_mse", "train_bce"]
+    lin_jobs   = [
+        (seed, lr, X, y, epochs, epsilon)
+        for seed, lr in product(seeds, lr_linear)
+    ]
+
+    lin_results: dict[tuple, list] = {}
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_linear_job, job): job for job in lin_jobs}
+        done = 0
+        for future in as_completed(futures):
+            seed, lr, rows, elapsed = future.result()
+            done += 1
+            print(f"  [{done}/{total_lin}] seed={seed}  lr={lr}"
+                  f"  epochs={len(rows)}  time={elapsed:.1f}s")
+            lin_results[(seed, lr)] = rows
 
     with open(linear_csv, "w", newline="") as fout:
         writer = csv.DictWriter(fout, fieldnames=lin_fields)
         writer.writeheader()
-
-        for done, (seed, lr) in enumerate(product(seeds, lr_linear), start=1):
-            print(f"  [{done}/{total_lin}] seed={seed}  lr={lr}")
-
-            model = SimpleLinearPerceptron(
-                learning_rate=lr,
-                epochs=epochs,
-                epsilon=epsilon,
-                seed=seed,
-            )
-
-            t0   = time.time()
-            rows = fit_and_record(model, X, y, epochs, epsilon, activation="logistic")
-            print(f"      epochs={len(rows)}  time={time.time()-t0:.1f}s")
-
+        for (seed, lr), rows in lin_results.items():
             for r in rows:
                 writer.writerow({
                     "model":     "linear",
@@ -243,35 +285,31 @@ def run(config_path: str) -> None:
                     "train_mse": r["train_mse"],
                     "train_bce": r["train_bce"],
                 })
-
     print(f"\n  ✓ Saved → {linear_csv}")
 
     # ── NON-LINEAR ───────────────────────────────────────────────────────────
     print("\n── Non-linear perceptron ───────────────────────────────────────")
     nln_fields = ["model", "seed", "lr", "activation", "epoch", "train_mse", "train_bce"]
+    nln_jobs   = [
+        (seed, lr, activation, beta, X, y, epochs, epsilon)
+        for seed, lr, activation in product(seeds, lr_nonlinear, activations)
+    ]
+
+    nln_results: dict[tuple, list] = {}
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_nonlinear_job, job): job for job in nln_jobs}
+        done = 0
+        for future in as_completed(futures):
+            seed, lr, activation, rows, elapsed = future.result()
+            done += 1
+            print(f"  [{done}/{total_nln}] seed={seed}  lr={lr}  act={activation}"
+                  f"  epochs={len(rows)}  time={elapsed:.1f}s")
+            nln_results[(seed, lr, activation)] = rows
 
     with open(nonlinear_csv, "w", newline="") as fout:
         writer = csv.DictWriter(fout, fieldnames=nln_fields)
         writer.writeheader()
-
-        for done, (seed, lr, activation) in enumerate(
-            product(seeds, lr_nonlinear, activations), start=1
-        ):
-            print(f"  [{done}/{total_nln}] seed={seed}  lr={lr}  act={activation}")
-
-            model = SimpleNonLinearPerceptron(
-                learning_rate=lr,
-                epochs=epochs,
-                epsilon=epsilon,
-                seed=seed,
-                activation=activation,
-                beta=beta,
-            )
-
-            t0   = time.time()
-            rows = fit_and_record(model, X, y, epochs, epsilon, activation=activation)
-            print(f"      epochs={len(rows)}  time={time.time()-t0:.1f}s")
-
+        for (seed, lr, activation), rows in nln_results.items():
             for r in rows:
                 writer.writerow({
                     "model":      "nonlinear",
@@ -282,7 +320,6 @@ def run(config_path: str) -> None:
                     "train_mse":  r["train_mse"],
                     "train_bce":  r["train_bce"],
                 })
-
     print(f"\n  ✓ Saved → {nonlinear_csv}")
     print("\nAll done.")
 
@@ -297,5 +334,10 @@ if __name__ == "__main__":
         "--config", required=True,
         help="Path to JSON config (e.g. linear_vs_nonlinear_fraud.json)"
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Number of parallel worker processes (default: 1)"
+    )
+    parser.add_argument("--outpath", type=str, required=True,help="Output path")
     args = parser.parse_args()
-    run(args.config)
+    run(args.config, outpath=args.outpath,workers=args.workers)
