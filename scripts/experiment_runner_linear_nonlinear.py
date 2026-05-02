@@ -39,14 +39,12 @@ from utils.test_data_split import stratified_split_regression
 ROOT = _ROOT
 DEFAULT_CONFIG = ROOT / "configs" / "linear_vs_nonlinear_fraud.json"
 
-RESULTS_DIR        = os.path.join("../results")
-SUMMARY_CSV        = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_summary.csv")
-CONFUSION_CSV      = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_confusion_runs.csv")
-CURVES_CSV         = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_curves.csv")
-ROC_CSV            = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_roc.csv")
-# New: one row per epoch with both train AND test MSE (for over/undertraining curves)
-# New: one row per run with final metrics (for over/underfitting curves across LRs)
-FITTING_CURVES_CSV = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_fitting_curves.csv")
+RESULTS_DIR        = str(ROOT / "results")
+SUMMARY_CSV        = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_summary.csv")
+CONFUSION_CSV      = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_confusion_runs.csv")
+CURVES_CSV         = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_curves.csv")
+ROC_CSV            = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_roc.csv")
+FITTING_CURVES_CSV = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_fitting_curves.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -224,10 +222,8 @@ def run_single(job: tuple[dict, str]) -> dict:
     # Dataset size and class balance info
     n_train          = len(y_train)
     n_test           = len(y_test)
-    fraud_rate_train = float(np.mean(y_stratify[(y >= 0.5) if no_split else np.ones(len(y), dtype=bool)]))
-    # Recompute per-split fraud rates correctly
     fraud_rate_train = float(np.mean((y_train >= 0.5).astype(int)))
-    fraud_rate_test  = float(np.mean((y_test  >= 0.5).astype(int)))
+    fraud_rate_test  = float(np.mean((y_test >= 0.5).astype(int)))
 
     # ------------------------------------------------------------------
     # Binary classification metrics (fraud detection)
@@ -477,12 +473,35 @@ def run_single(job: tuple[dict, str]) -> dict:
 # Job expansion
 # ---------------------------------------------------------------------------
 
+def _linear_job_signature(base: dict) -> tuple:
+    """Keys that affect linear training; activation is ignored (linear has no activation)."""
+    def _atom(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return float(v) if isinstance(v, float) else int(v)
+        return str(v)
+
+    parts = []
+    for k in sorted(base.keys()):
+        if k == "activation":
+            continue
+        parts.append((k, _atom(base[k])))
+    return tuple(parts)
+
+
 def expand_jobs(bases: list[dict]) -> list[tuple[dict, str]]:
-    """Produce one (base, model_type) job per base config × {linear, non-linear}."""
+    """One non-linear job per base row; one linear job per distinct config ignoring ``activation``."""
     jobs: list[tuple[dict, str]] = []
+    seen_linear: set[tuple] = set()
     for b in bases:
-        for mt in ("linear", "non-linear"):
-            jobs.append((b, mt))
+        sig = _linear_job_signature(b)
+        if sig not in seen_linear:
+            seen_linear.add(sig)
+            linear_base = dict(b)
+            linear_base["activation"] = "identity"
+            jobs.append((linear_base, "linear"))
+        jobs.append((b, "non-linear"))
     return jobs
 
 
@@ -519,12 +538,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _append_csv(path: str, df_new: pd.DataFrame) -> None:
-    """Append rows to an existing CSV, or create it if it does not exist."""
-    if os.path.isfile(path):
-        prev   = pd.read_csv(path)
-        df_new = pd.concat([prev, df_new], ignore_index=True, sort=False)
-    df_new.to_csv(path, index=False)
+def _write_result_csv(path: str, df_new: pd.DataFrame) -> None:
+    """Write one results CSV (full replace for this run)."""
+    df_new.to_csv(path, index=False, encoding="utf-8")
 
 
 def main() -> None:
@@ -572,28 +588,38 @@ def main() -> None:
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
+    for stale in (
+        SUMMARY_CSV,
+        CONFUSION_CSV,
+        CURVES_CSV,
+        ROC_CSV,
+        FITTING_CURVES_CSV,
+    ):
+        if os.path.isfile(stale):
+            os.remove(stale)
+
     df_s = pd.DataFrame(summary_rows)
     sort_cols = [c for c in ("name", "data", "model_type", "activation", "test_per", "lr", "seed")
                  if c in df_s.columns]
     if sort_cols:
         df_s = df_s.sort_values(sort_cols, kind="stable")
 
-    _append_csv(SUMMARY_CSV,        df_s)
-    _append_csv(CONFUSION_CSV,      pd.DataFrame(all_cm))
-    _append_csv(FITTING_CURVES_CSV, pd.DataFrame(all_fitting))
+    _write_result_csv(SUMMARY_CSV, df_s)
+    _write_result_csv(CONFUSION_CSV, pd.DataFrame(all_cm))
+    _write_result_csv(FITTING_CURVES_CSV, pd.DataFrame(all_fitting))
 
     if all_curves:
-        _append_csv(CURVES_CSV, pd.DataFrame(all_curves))
+        _write_result_csv(CURVES_CSV, pd.DataFrame(all_curves))
     if all_roc:
-        _append_csv(ROC_CSV, pd.DataFrame(all_roc))
+        _write_result_csv(ROC_CSV, pd.DataFrame(all_roc))
 
-    print(f"Appended {len(summary_rows)} rows          -> {SUMMARY_CSV}")
-    print(f"Appended {len(all_cm)} confusion cells   -> {CONFUSION_CSV}")
-    print(f"Appended {len(all_fitting)} fitting rows   -> {FITTING_CURVES_CSV}")
+    print(f"Wrote {len(summary_rows)} summary rows -> {SUMMARY_CSV}")
+    print(f"Wrote {len(all_cm)} confusion cells   -> {CONFUSION_CSV}")
+    print(f"Wrote {len(all_fitting)} fitting rows    -> {FITTING_CURVES_CSV}")
     if all_curves:
-        print(f"Appended {len(all_curves)} curve points    -> {CURVES_CSV}")
+        print(f"Wrote {len(all_curves)} curve points    -> {CURVES_CSV}")
     if all_roc:
-        print(f"Appended {len(all_roc)} ROC points        -> {ROC_CSV}")
+        print(f"Wrote {len(all_roc)} ROC points        -> {ROC_CSV}")
 
 
 if __name__ == "__main__":
