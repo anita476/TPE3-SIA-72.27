@@ -39,11 +39,14 @@ from utils.test_data_split import stratified_split_regression
 ROOT = _ROOT
 DEFAULT_CONFIG = ROOT / "configs" / "linear_vs_nonlinear_fraud.json"
 
-RESULTS_DIR   = os.path.join("results")
-SUMMARY_CSV   = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_summary.csv")
-CONFUSION_CSV = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_confusion_runs.csv")
-CURVES_CSV    = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_curves.csv")
-ROC_CSV       = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_roc.csv")
+RESULTS_DIR        = os.path.join("results")
+SUMMARY_CSV        = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_summary.csv")
+CONFUSION_CSV      = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_confusion_runs.csv")
+CURVES_CSV         = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_curves.csv")
+ROC_CSV            = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_roc.csv")
+# New: one row per epoch with both train AND test MSE (for over/undertraining curves)
+# New: one row per run with final metrics (for over/underfitting curves across LRs)
+FITTING_CURVES_CSV = os.path.join(RESULTS_DIR, "linear_vs_nonlinear_fitting_curves.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +141,8 @@ def _metrics_float(
 def run_single(job: tuple[dict, str]) -> dict:
     """Train one perceptron (linear or non-linear) on the fraud dataset.
 
-    Returns a dict with keys: summary, cm_rows, curve_rows, roc_rows.
+    Returns a dict with keys: summary, cm_rows, curve_rows, roc_rows,
+    fitting_curve_row.
     """
     base, model_type = job
     seed      = int(base["seed"])
@@ -192,12 +196,15 @@ def run_single(job: tuple[dict, str]) -> dict:
     # normalize labels if its tanh so that it works
     if model_type == "non-linear" and act_name == "tanh":
         y_train_fit = 2 * y_train - 1  # [-1, 1] to match tanh range
+        y_test_fit  = 2 * y_test  - 1
     else:
         y_train_fit = y_train
+        y_test_fit  = y_test
 
     t0 = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
-        perceptron.fit(X_train, y_train_fit)
+        # Pass validation set so test_mse_history_ is populated each epoch.
+        perceptron.fit(X_train, y_train_fit, X_val=X_test, y_val=y_test_fit)
     elapsed_seconds = time.perf_counter() - t0
 
     train_preds = perceptron.predict(X_train)
@@ -219,6 +226,7 @@ def run_single(job: tuple[dict, str]) -> dict:
     train_acc, _, _       = _metrics_float(y_train, train_preds, tolerance)
     test_acc, mae, mse    = _metrics_float(y_test,  test_preds,  tolerance)
     final_train_mse       = float(np.mean((train_preds - y_train) ** 2)) if len(y_train) else 0.0
+    final_test_mse        = float(np.mean((test_preds  - y_test)  ** 2)) if len(y_test)  else 0.0
     epochs_completed      = int(getattr(perceptron, "epochs_run_", base["epochs"]))
 
     # Dataset size and class balance info
@@ -353,10 +361,14 @@ def run_single(job: tuple[dict, str]) -> dict:
 
     # ------------------------------------------------------------------
     # Learning curve rows (one row per epoch)
+    # Now includes test_mse alongside train_mse for over/undertraining plots.
     # ------------------------------------------------------------------
+    train_mse_hist = list(getattr(perceptron, "train_mse_history_", []))
+    test_mse_hist  = list(getattr(perceptron, "test_mse_history_",  []))
+
     curve_rows: list[dict] = []
-    for epoch_idx, mse_val in enumerate(getattr(perceptron, "train_mse_history_", [])):
-        curve_rows.append({
+    for epoch_idx, mse_val in enumerate(train_mse_hist):
+        row: dict = {
             "run_id":     run_id,
             "model_type": model_type,
             "name":       base["name"],
@@ -367,7 +379,67 @@ def run_single(job: tuple[dict, str]) -> dict:
             "no_split":   no_split,
             "epoch":      epoch_idx + 1,
             "train_mse":  round(float(mse_val), 8),
-        })
+            # test_mse is present when X_val was passed (i.e. no_split is False)
+            "test_mse":   round(float(test_mse_hist[epoch_idx]), 8)
+                          if epoch_idx < len(test_mse_hist) else None,
+        }
+        curve_rows.append(row)
+
+    # ------------------------------------------------------------------
+    # Fitting-curve row (one row per run, for over/underfitting vs LR plot)
+    #
+    # Columns:
+    #   model_type, activation, lr, seed, epochs_completed,
+    #   final_train_mse, final_test_mse,   <- MSE-based gap
+    #   train_roc_auc, roc_auc,            <- AUC-based gap
+    #   train_f1_at_half, f1_at_half,      <- F1-based gap
+    #   gap_mse  = final_test_mse - final_train_mse   (>0 underfit on test / generalization error)
+    #   gap_auc  = train_roc_auc - roc_auc            (>0 overfit in AUC)
+    #   gap_f1   = train_f1_at_half - f1_at_half      (>0 overfit in F1)
+    # ------------------------------------------------------------------
+    gap_mse = (
+        round(final_test_mse - final_train_mse, 8)
+        if not (math.isnan(final_test_mse) or math.isnan(final_train_mse))
+        else math.nan
+    )
+    gap_auc = (
+        _r(train_roc_auc_val - roc_auc_val)
+        if not (math.isnan(train_roc_auc_val) or math.isnan(roc_auc_val))
+        else math.nan
+    )
+    gap_f1 = (
+        _r(train_f1_half - f1_half)
+        if not (math.isnan(train_f1_half) or math.isnan(f1_half))
+        else math.nan
+    )
+
+    fitting_curve_row: dict = {
+        "run_id":            run_id,
+        "name":              base["name"],
+        "data":              data_bn,
+        "model_type":        model_type,
+        "activation":        act_name,
+        "lr":                base["lr"],
+        "epochs":            base["epochs"],
+        "epsilon":           base["epsilon"],
+        "seed":              seed,
+        "test_per":          tp_val,
+        "no_split":          no_split,
+        "epochs_completed":  epochs_completed,
+        # --- absolute MSE ---
+        "final_train_mse":   round(final_train_mse, 8),
+        "final_test_mse":    round(final_test_mse,  8),
+        # --- absolute AUC ---
+        "train_roc_auc":     _r(train_roc_auc_val),
+        "test_roc_auc":      _r(roc_auc_val),
+        # --- absolute F1 ---
+        "train_f1":          _r(train_f1_half),
+        "test_f1":           _r(f1_half),
+        # --- gaps (positive = model generalizes worse on test = tends toward overfitting) ---
+        "gap_mse":           gap_mse,   # test_mse - train_mse
+        "gap_auc":           gap_auc,   # train_auc - test_auc
+        "gap_f1":            gap_f1,    # train_f1  - test_f1
+    }
 
     # ------------------------------------------------------------------
     # ROC curve rows (one row per threshold point)
@@ -400,10 +472,11 @@ def run_single(job: tuple[dict, str]) -> dict:
             })
 
     return {
-        "summary":    summary_row,
-        "cm_rows":    cm_rows,
-        "curve_rows": curve_rows,
-        "roc_rows":   roc_rows,
+        "summary":           summary_row,
+        "cm_rows":           cm_rows,
+        "curve_rows":        curve_rows,
+        "fitting_curve_row": fitting_curve_row,
+        "roc_rows":          roc_rows,
     }
 
 
@@ -498,9 +571,10 @@ def main() -> None:
         with mp.Pool(n_workers) as pool:
             out = pool.map(_worker, jobs)
 
-    summary_rows = [o["summary"]    for o in out]
+    summary_rows        = [o["summary"]           for o in out]
     all_cm:     list[dict] = [row for o in out for row in o["cm_rows"]]
     all_curves: list[dict] = [row for o in out for row in o["curve_rows"]]
+    all_fitting: list[dict] = [o["fitting_curve_row"] for o in out]
     all_roc:    list[dict] = [row for o in out for row in o["roc_rows"]]
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -511,19 +585,22 @@ def main() -> None:
     if sort_cols:
         df_s = df_s.sort_values(sort_cols, kind="stable")
 
-    _append_csv(SUMMARY_CSV,   df_s)
-    _append_csv(CONFUSION_CSV, pd.DataFrame(all_cm))
+    _append_csv(SUMMARY_CSV,        df_s)
+    _append_csv(CONFUSION_CSV,      pd.DataFrame(all_cm))
+    _append_csv(FITTING_CURVES_CSV, pd.DataFrame(all_fitting))
+
     if all_curves:
         _append_csv(CURVES_CSV, pd.DataFrame(all_curves))
     if all_roc:
         _append_csv(ROC_CSV, pd.DataFrame(all_roc))
 
-    print(f"Appended {len(summary_rows)} rows         -> {SUMMARY_CSV}")
-    print(f"Appended {len(all_cm)} confusion cells  -> {CONFUSION_CSV}")
+    print(f"Appended {len(summary_rows)} rows          -> {SUMMARY_CSV}")
+    print(f"Appended {len(all_cm)} confusion cells   -> {CONFUSION_CSV}")
+    print(f"Appended {len(all_fitting)} fitting rows   -> {FITTING_CURVES_CSV}")
     if all_curves:
         print(f"Appended {len(all_curves)} curve points    -> {CURVES_CSV}")
     if all_roc:
-        print(f"Appended {len(all_roc)} ROC points       -> {ROC_CSV}")
+        print(f"Appended {len(all_roc)} ROC points        -> {ROC_CSV}")
 
 
 if __name__ == "__main__":

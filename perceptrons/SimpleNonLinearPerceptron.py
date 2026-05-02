@@ -18,13 +18,12 @@ def _relu(h, beta=1.0):
     return np.maximum(0.0, h)
 
 def _relu_derivative(g_h, beta=1.0):
-    # g_h = relu(h): derivative is 1 where g_h > 0, 0 otherwise
     return (g_h > 0).astype(float)
 
 ACTIVATIONS = {
-    'tanh':     (_tanh,     _tanh_derivative),      # output range [-1, 1]
-    'logistic': (_logistic, _logistic_derivative),  # output range [0, 1]
-    'relu':     (_relu,     _relu_derivative),      # output range [0, +inf)
+    'tanh':     (_tanh,     _tanh_derivative),
+    'logistic': (_logistic, _logistic_derivative),
+    'relu':     (_relu,     _relu_derivative),
 }
 
 
@@ -42,13 +41,20 @@ class SimpleNonLinearPerceptron(Perceptron):
         self.g, self.g_prime = ACTIVATIONS[activation]
 
     def _activation(self, value):
-        # called by base class _predict_single
         return self.g(value, self.beta)
 
-    def fit(self, X, y):
+    def fit(self, X, y, X_val=None, y_val=None):
+        """
+        X, y         — training data
+        X_val, y_val — optional validation data for test MSE tracking.
+                       If provided, test_mse_history_ is populated each epoch.
+        """
         n_samples, n_features = X.shape
         self._initialize_parameters(n_features)
         self.train_mse_history_: list[float] = []
+        self.test_mse_history_:  list[float] = []
+
+        compute_val = X_val is not None and y_val is not None
 
         for epoch in range(self.epochs):
             indices = self.rng.permutation(n_samples)
@@ -56,14 +62,20 @@ class SimpleNonLinearPerceptron(Perceptron):
                 x_i = X[i]
                 y_i = y[i]
 
-                prediction = self._predict_single(x_i)  # g(h), computed once and reused in delta
+                prediction = self._predict_single(x_i)
                 error = y_i - prediction
                 delta = error * self.g_prime(prediction, self.beta)
                 self.weights += self.learning_rate * delta * x_i
-                self.bias += self.learning_rate * delta
+                self.bias    += self.learning_rate * delta
 
-            total_error = self._total_error(X, y)
-            self.train_mse_history_.append(total_error / n_samples)
+            train_mse = self._total_error(X, y) / n_samples
+            self.train_mse_history_.append(train_mse)
+
+            if compute_val:
+                val_mse = self._total_error(X_val, y_val) / len(y_val)
+                self.test_mse_history_.append(val_mse)
+
+            total_error = train_mse * n_samples
             print(f"Epoch {epoch + 1}: total error = {total_error:.4f}")
             if total_error < self.epsilon:
                 print(f"Converged at epoch {epoch + 1}")
