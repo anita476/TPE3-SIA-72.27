@@ -126,8 +126,20 @@ def _save(fig: plt.Figure, name: str) -> None:
 
 def _best_lr(df: pd.DataFrame, model_type: str, activation: str,
              metric: str = "roc_auc") -> float:
-    sub = df[(df["model_type"] == model_type) & (df["activation"] == activation)]
-    return float(sub.groupby("lr")[metric].mean().idxmax())
+    if model_type == "linear":
+        sub = df[df["model_type"] == "linear"]
+    else:
+        sub = df[(df["model_type"] == model_type) & (df["activation"] == activation)]
+    if sub.empty:
+        raise ValueError(
+            f"_best_lr: sin filas para model_type={model_type!r}, activation={activation!r}"
+        )
+    g = sub.groupby("lr")[metric].mean().dropna()
+    if g.empty:
+        raise ValueError(
+            f"_best_lr: métrica {metric!r} vacía/NaN para model_type={model_type!r}"
+        )
+    return float(g.idxmax())
 
 
 def _filter_best_lr(df: pd.DataFrame, metric: str = "roc_auc") -> pd.DataFrame:
@@ -181,6 +193,13 @@ def _prefer_full_dataset(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
     return full
 
 
+def _activations_for_nl_panels(df: pd.DataFrame, col: str = "activation") -> list:
+    """Activaciones por columna de panel: excluye ``identity`` (solo usada en el lineal)."""
+    raw = df[col].dropna().unique()
+    acts = sorted(raw, key=lambda x: str(x).lower())
+    return [a for a in acts if str(a).lower() != "identity"]
+
+
 # =============================================================================
 # Q1a + Q1b — Curvas de aprendizaje (dataset completo)
 # Q1a: underfitting -> MSE se estabiliza en un valor alto
@@ -192,9 +211,9 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
     full = _prefer_full_dataset(summary, "summary")
     c    = _prefer_full_dataset(curves, "curves")
 
-    activations = sorted(c["activation"].dropna().unique())
+    activations = _activations_for_nl_panels(full)
     if not activations:
-        print("  aviso: no hay activaciones disponibles para Q1a+Q1b; se omite este gráfico.")
+        print("  aviso: no hay activaciones no lineales para Q1a+Q1b; se omite este gráfico.")
         return
     n = len(activations)
 
@@ -202,12 +221,18 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
     all_curve_data: dict[tuple, tuple] = {}
     for act in activations:
         for mt in ["linear", "non-linear"]:
-            sub_full = full[(full["model_type"] == mt) & (full["activation"] == act)]
+            if mt == "linear":
+                sub_full = full[full["model_type"] == "linear"]
+            else:
+                sub_full = full[(full["model_type"] == "non-linear") & (full["activation"] == act)]
             if sub_full.empty:
                 all_curve_data[(act, mt)] = (np.nan, np.array([]), np.array([]), np.array([]), 0)
                 continue
             best = float(sub_full.groupby("lr")["roc_auc"].mean().idxmax())
-            sub = c[(c["activation"] == act) & (c["model_type"] == mt) & (c["lr"] == best)]
+            if mt == "linear":
+                sub = c[(c["model_type"] == "linear") & (c["lr"] == best)]
+            else:
+                sub = c[(c["activation"] == act) & (c["model_type"] == mt) & (c["lr"] == best)]
             xs, mean, std = _seed_curves(sub)
             n_seeds = int(sub["seed"].nunique()) if not sub.empty else 0
             all_curve_data[(act, mt)] = (best, xs, mean, std, n_seeds)
@@ -261,7 +286,7 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
 def plot_q1ab_lr(summary: pd.DataFrame) -> None:
     print("Q1a+Q1b — sensibilidad al learning rate ...")
     full = _prefer_full_dataset(summary, "summary")
-    activations = sorted(full["activation"].dropna().unique())
+    activations = _activations_for_nl_panels(full)
     lrs = sorted(full["lr"].dropna().unique())
     n = len(activations)
     if n == 0 or len(lrs) == 0:
@@ -278,7 +303,8 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
         w   = 2
 
         for ax, act in zip(axes, activations):
-            af = full[full["activation"] == act]
+            af_l  = full[full["model_type"] == "linear"]
+            af_nl = full[(full["model_type"] == "non-linear") & (full["activation"] == act)]
             positions_l, positions_nl = [], []
             data_l, data_nl = [], []
             tick_pos, tick_lbl = [], []
@@ -289,11 +315,9 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
                 positions_nl.append(base + 1)
                 # IQR con factor=3 para eliminar solo divergencias extremas
                 dl  = _remove_outliers_iqr(
-                    af[(af["model_type"] == "linear") &
-                       (af["lr"] == lr)]["final_train_mse"].dropna().tolist(), factor=3.0)
+                    af_l[af_l["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
                 dnl = _remove_outliers_iqr(
-                    af[(af["model_type"] == "non-linear") &
-                       (af["lr"] == lr)]["final_train_mse"].dropna().tolist(), factor=3.0)
+                    af_nl[af_nl["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
                 # Escala log requiere valores > 0
                 data_l.append([max(v, 1e-6) for v in dl])
                 data_nl.append([max(v, 1e-6) for v in dnl])
@@ -320,7 +344,9 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
             ],
             fontsize=9, loc="upper right",
         )
-        n_per_box = int(full[(full["activation"] == activations[0]) & (full["model_type"] == "linear") & (full["lr"] == lrs[0])]["seed"].count())
+        n_per_box = int(
+            full[(full["model_type"] == "linear") & (full["lr"] == lrs[0])]["seed"].count()
+        )
         axes[0].set_ylabel(f"MSE final de entrenamiento  (escala logar\u00edtmica, n={n_per_box} por caja)")
         fig.suptitle(
             "Q1a + Q1b  \u2014  MSE final seg\u00fan tasa de aprendizaje (dataset completo, escala log)\n"
@@ -342,7 +368,10 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
                     suptitle: str, filename: str) -> None:
     """Genera un panel 1×n_act para una metrica de Q1c."""
     from matplotlib.patches import Patch
-    activations = sorted(full["activation"].unique())
+    activations = _activations_for_nl_panels(full)
+    if not activations:
+        print(f"  aviso: sin activaciones no lineales; se omite {filename}.")
+        return
     n_act = len(activations)
 
     with plt.rc_context(PLOT_RC):
@@ -355,11 +384,16 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
             tick_labels, data_pair = [], []
             for mt in ["linear", "non-linear"]:
                 best = _best_lr(full, mt, act)
-                raw  = full[
-                    (full["model_type"] == mt) &
-                    (full["activation"] == act) &
-                    (full["lr"]         == best)
-                ][metric].dropna().tolist()
+                if mt == "linear":
+                    raw = full[
+                        (full["model_type"] == "linear") & (full["lr"] == best)
+                    ][metric].dropna().tolist()
+                else:
+                    raw = full[
+                        (full["model_type"] == "non-linear") &
+                        (full["activation"] == act) &
+                        (full["lr"] == best)
+                    ][metric].dropna().tolist()
                 if use_log:
                     raw = [max(v, 1e-6) for v in raw]
                 data_pair.append(raw)

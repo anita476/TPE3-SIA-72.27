@@ -473,12 +473,35 @@ def run_single(job: tuple[dict, str]) -> dict:
 # Job expansion
 # ---------------------------------------------------------------------------
 
+def _linear_job_signature(base: dict) -> tuple:
+    """Keys that affect linear training; activation is ignored (linear has no activation)."""
+    def _atom(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return float(v) if isinstance(v, float) else int(v)
+        return str(v)
+
+    parts = []
+    for k in sorted(base.keys()):
+        if k == "activation":
+            continue
+        parts.append((k, _atom(base[k])))
+    return tuple(parts)
+
+
 def expand_jobs(bases: list[dict]) -> list[tuple[dict, str]]:
-    """Produce one (base, model_type) job per base config × {linear, non-linear}."""
+    """One non-linear job per base row; one linear job per distinct config ignoring ``activation``."""
     jobs: list[tuple[dict, str]] = []
+    seen_linear: set[tuple] = set()
     for b in bases:
-        for mt in ("linear", "non-linear"):
-            jobs.append((b, mt))
+        sig = _linear_job_signature(b)
+        if sig not in seen_linear:
+            seen_linear.add(sig)
+            linear_base = dict(b)
+            linear_base["activation"] = "identity"
+            jobs.append((linear_base, "linear"))
+        jobs.append((b, "non-linear"))
     return jobs
 
 
