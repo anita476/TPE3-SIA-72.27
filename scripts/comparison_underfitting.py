@@ -9,21 +9,19 @@ Usage:
     python run_comparison.py --config linear_vs_nonlinear_fraud.json
 
 Output CSVs (written to results/):
-    <name>_linear_curves.csv     — one row per (seed, lr, epoch)
-    <name>_nonlinear_curves.csv  — one row per (seed, lr, activation, epoch)
+    <name>_linear_curves.csv       — one row per (seed, lr, epoch)
+    <name>_nonlinear_curves.csv    — one row per (seed, lr, activation, epoch)
+    <name>_linear_recall.csv       — one row per (seed, lr, epoch)  [recall]
+    <name>_nonlinear_recall.csv    — one row per (seed, lr, activation, epoch) [recall]
 
-Columns: model, seed, lr, [activation,] epoch, train_mse, train_bce
+Columns MSE/BCE CSVs : model, seed, lr, [activation,] epoch, train_mse, train_bce
+Columns recall CSVs  : model, seed, lr, [activation,] epoch, train_recall
 
 Label scaling:
     tanh output range is (-1, 1), so when activation='tanh' the labels are
     scaled from {0,1} → {-1,1} before training.  Predictions are mapped back
-    to [0,1] before MSE and BCE are computed so all metrics stay comparable
-    across activations.  Linear and other activations always train on {0,1}.
-
-To use different learning rates per model type, add to your config grid:
-    "lr_linear":    [0.001, 0.01]
-    "lr_nonlinear": [0.0001, 0.001, 0.01]
-If only "lr" is present it is shared by both.
+    to [0,1] before MSE, BCE and recall are computed so all metrics stay
+    comparable across activations.
 """
 
 import argparse
@@ -49,11 +47,6 @@ from perceptrons.SimpleNonLinearPerceptron import SimpleNonLinearPerceptron
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 def bce_from_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Binary cross-entropy. Clips predictions to (eps, 1-eps) so log(0) never fires.
-    For the linear model, outputs outside [0,1] get clamped — BCE will be large,
-    which is precisely the point of keeping it in the comparison.
-    """
     eps = 1e-12
     p = np.clip(y_pred, eps, 1 - eps)
     return float(-np.mean(y_true * np.log(p) + (1 - y_true) * np.log(1 - p)))
@@ -61,6 +54,14 @@ def bce_from_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 def mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean((y_true - y_pred) ** 2))
+
+
+def recall_score(y_true: np.ndarray, y_pred_prob: np.ndarray, threshold: float = 0.5) -> float:
+    """Recall for the positive class. Returns 0.0 if no positive samples exist."""
+    y_pred = (y_pred_prob >= threshold).astype(int)
+    tp = int(np.sum((y_pred == 1) & (y_true == 1)))
+    fn = int(np.sum((y_pred == 0) & (y_true == 1)))
+    return tp / (tp + fn) if (tp + fn) > 0 else 0.0
 
 
 def normalize(X: np.ndarray, method: str) -> np.ndarray:
@@ -74,23 +75,12 @@ def normalize(X: np.ndarray, method: str) -> np.ndarray:
 
 
 def label_scale_for_activation(y: np.ndarray, activation: str) -> np.ndarray:
-    """
-    tanh saturates at ±1, so targets must live in (-1, 1) not {0, 1}.
-    Map  0 → -1  and  1 → +1  :   y_scaled = 2*y - 1
-    All other activations expect targets in [0, 1] — return y unchanged.
-    """
     if activation == "tanh":
         return 2.0 * y - 1.0
     return y
 
 
 def tanh_pred_to_prob(y_pred: np.ndarray) -> np.ndarray:
-    """
-    Invert the label scaling so predictions land back in [0, 1].
-    p = (pred + 1) / 2
-    This lets MSE and BCE be computed on the original probability scale
-    regardless of which activation was used during training.
-    """
     return (y_pred + 1.0) / 2.0
 
 
@@ -101,7 +91,6 @@ def load_data(path: str, label: str, drop_cols: list[str] = []) -> tuple[np.ndar
             f"Label column '{label}' not found. "
             f"Available: {list(df.columns)}"
         )
-
     cols_to_drop = [label] + [c for c in drop_cols if c in df.columns]
     y = df[label].values.astype(float)
     X = (
@@ -110,7 +99,6 @@ def load_data(path: str, label: str, drop_cols: list[str] = []) -> tuple[np.ndar
         .values.astype(float)
     )
     return X, y
-
 
 
 # ── training loop ────────────────────────────────────────────────────────────
@@ -124,14 +112,12 @@ def fit_and_record(
     activation: str = "logistic",
 ) -> list[dict]:
     """
-    Replicates the SGD loop from both perceptron classes and records
-    train MSE and BCE after every epoch, without touching the originals.
+    Trains the model epoch by epoch, recording train MSE, BCE and recall
+    after every epoch.
 
-    y is expected in {0, 1}.  When activation='tanh', labels are scaled to
-    {-1, +1} for training and predictions are mapped back to [0, 1] before
-    metrics are computed — so MSE and BCE are always on the probability scale.
-
-    Returns one dict per epoch actually run.
+    y is always expected in {0, 1}.
+    For tanh, labels are scaled to {-1, +1} internally; predictions are mapped
+    back to [0, 1] before computing any metric.
     """
     y_train = label_scale_for_activation(y, activation)
     n       = len(y_train)
@@ -155,34 +141,33 @@ def fit_and_record(
 
         raw_pred = model.predict(X)
 
-        # convergence check on scaled-label SSE — mirrors original perceptron behaviour
+        # convergence check on scaled-label SSE
         sse = float(np.sum((y_train - raw_pred) ** 2))
 
-        # map predictions back to [0,1] for comparable, activation-agnostic metrics
+        # map back to [0,1] for comparable metrics
         prob_pred = tanh_pred_to_prob(raw_pred) if activation == "tanh" else raw_pred
 
-        tr_mse = mse(y, prob_pred)
-        tr_bce = bce_from_predictions(y, prob_pred)
+        tr_mse    = mse(y, prob_pred)
+        tr_bce    = bce_from_predictions(y, prob_pred)
+        tr_recall = recall_score(y, prob_pred)
 
         rows.append({
-            "epoch":     epoch + 1,
-            "train_mse": tr_mse,
-            "train_bce": tr_bce,
+            "epoch":        epoch + 1,
+            "train_mse":    tr_mse,
+            "train_bce":    tr_bce,
+            "train_recall": tr_recall,
         })
 
         if sse < epsilon:
-            print(f"      ✓ converged at epoch {epoch + 1}  (SSE={sse:.4f})")
+            print(f"      ✓ converged at epoch {epoch + 1}  (SSE={sse:.4f})  recall={tr_recall:.4f}")
             break
-
 
     return rows
 
 
 # ── parallel worker functions ────────────────────────────────────────────────
-# These must be module-level (not closures) so ProcessPoolExecutor can pickle them.
 
 def _run_linear_job(args_tuple):
-    """Worker: train one (seed, lr) linear job. Returns list of row dicts."""
     seed, lr, X, y, epochs, epsilon = args_tuple
     model = SimpleLinearPerceptron(
         learning_rate=lr,
@@ -190,14 +175,13 @@ def _run_linear_job(args_tuple):
         epsilon=epsilon,
         seed=seed,
     )
-    t0   = time.time()
-    rows = fit_and_record(model, X, y, epochs, epsilon, activation="logistic")
+    t0      = time.time()
+    rows    = fit_and_record(model, X, y, epochs, epsilon, activation="logistic")
     elapsed = time.time() - t0
     return seed, lr, rows, elapsed
 
 
 def _run_nonlinear_job(args_tuple):
-    """Worker: train one (seed, lr, activation) nonlinear job. Returns list of row dicts."""
     seed, lr, activation, beta, X, y, epochs, epsilon = args_tuple
     model = SimpleNonLinearPerceptron(
         learning_rate=lr,
@@ -207,15 +191,15 @@ def _run_nonlinear_job(args_tuple):
         activation=activation,
         beta=beta,
     )
-    t0   = time.time()
-    rows = fit_and_record(model, X, y, epochs, epsilon, activation=activation)
+    t0      = time.time()
+    rows    = fit_and_record(model, X, y, epochs, epsilon, activation=activation)
     elapsed = time.time() - t0
     return seed, lr, activation, rows, elapsed
 
 
+# ── main ─────────────────────────────────────────────────────────────────────
 
-
-def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -> None:
+def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = []) -> None:
     with open(config_path) as f:
         cfg = json.load(f)
 
@@ -233,7 +217,7 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
     beta    = base.get("beta", 1.0)
 
     print(f"Loading data: {base['data']}")
-    X, y = load_data(base["data"], base["label"],drop_cols)
+    X, y = load_data(base["data"], base["label"], drop_cols)
     X    = normalize(X, norm)
     print(
         f"  {X.shape[0]} samples | {X.shape[1]} features | "
@@ -244,13 +228,14 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
     out_dir.mkdir(exist_ok=True)
     name = base.get("name", "experiment")
 
-    linear_csv    = out_dir / f"{name}_linear_curves.csv"
-    nonlinear_csv = out_dir / f"{name}_nonlinear_curves.csv"
+    # Output file paths
+    linear_csv         = out_dir / f"{name}_linear_curves.csv"
+    nonlinear_csv      = out_dir / f"{name}_nonlinear_curves.csv"
+    linear_recall_csv  = out_dir / f"{name}_linear_recall.csv"
+    nonlinear_recall_csv = out_dir / f"{name}_nonlinear_recall.csv"
 
     total_lin = len(seeds) * len(lr_linear)
     total_nln = len(seeds) * len(lr_nonlinear) * len(activations)
-
-    # Cap workers to the number of CPUs available
     max_workers = min(workers, os.cpu_count() or 1)
 
     print("=" * 60)
@@ -262,8 +247,9 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
 
     # ── LINEAR ──────────────────────────────────────────────────────────────
     print("\n── Linear perceptron ───────────────────────────────────────────")
-    lin_fields = ["model", "seed", "lr", "epoch", "train_mse", "train_bce"]
-    lin_jobs   = [
+    lin_fields        = ["model", "seed", "lr", "epoch", "train_mse", "train_bce"]
+    lin_recall_fields = ["model", "seed", "lr", "epoch", "train_recall"]
+    lin_jobs = [
         (seed, lr, X, y, epochs, epsilon)
         for seed, lr in product(seeds, lr_linear)
     ]
@@ -275,10 +261,14 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
         for future in as_completed(futures):
             seed, lr, rows, elapsed = future.result()
             done += 1
-            print(f"  [{done}/{total_lin}] seed={seed}  lr={lr}"
-                  f"  epochs={len(rows)}  time={elapsed:.1f}s")
+            final_recall = rows[-1]["train_recall"]
+            print(
+                f"  [{done}/{total_lin}] seed={seed}  lr={lr}"
+                f"  epochs={len(rows)}  recall={final_recall:.4f}  time={elapsed:.1f}s"
+            )
             lin_results[(seed, lr)] = rows
 
+    # Write MSE/BCE CSV
     with open(linear_csv, "w", newline="") as fout:
         writer = csv.DictWriter(fout, fieldnames=lin_fields)
         writer.writeheader()
@@ -292,12 +282,28 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
                     "train_mse": r["train_mse"],
                     "train_bce": r["train_bce"],
                 })
-    print(f"\n  ✓ Saved → {linear_csv}")
+    print(f"\n  ✓ Saved MSE/BCE → {linear_csv}")
+
+    # Write recall CSV
+    with open(linear_recall_csv, "w", newline="") as fout:
+        writer = csv.DictWriter(fout, fieldnames=lin_recall_fields)
+        writer.writeheader()
+        for (seed, lr), rows in lin_results.items():
+            for r in rows:
+                writer.writerow({
+                    "model":        "linear",
+                    "seed":         seed,
+                    "lr":           lr,
+                    "epoch":        r["epoch"],
+                    "train_recall": r["train_recall"],
+                })
+    print(f"  ✓ Saved recall   → {linear_recall_csv}")
 
     # ── NON-LINEAR ───────────────────────────────────────────────────────────
     print("\n── Non-linear perceptron ───────────────────────────────────────")
-    nln_fields = ["model", "seed", "lr", "activation", "epoch", "train_mse", "train_bce"]
-    nln_jobs   = [
+    nln_fields        = ["model", "seed", "lr", "activation", "epoch", "train_mse", "train_bce"]
+    nln_recall_fields = ["model", "seed", "lr", "activation", "epoch", "train_recall"]
+    nln_jobs = [
         (seed, lr, activation, beta, X, y, epochs, epsilon)
         for seed, lr, activation in product(seeds, lr_nonlinear, activations)
     ]
@@ -309,10 +315,14 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
         for future in as_completed(futures):
             seed, lr, activation, rows, elapsed = future.result()
             done += 1
-            print(f"  [{done}/{total_nln}] seed={seed}  lr={lr}  act={activation}"
-                  f"  epochs={len(rows)}  time={elapsed:.1f}s")
+            final_recall = rows[-1]["train_recall"]
+            print(
+                f"  [{done}/{total_nln}] seed={seed}  lr={lr}  act={activation}"
+                f"  epochs={len(rows)}  recall={final_recall:.4f}  time={elapsed:.1f}s"
+            )
             nln_results[(seed, lr, activation)] = rows
 
+    # Write MSE/BCE CSV
     with open(nonlinear_csv, "w", newline="") as fout:
         writer = csv.DictWriter(fout, fieldnames=nln_fields)
         writer.writeheader()
@@ -327,7 +337,23 @@ def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -
                     "train_mse":  r["train_mse"],
                     "train_bce":  r["train_bce"],
                 })
-    print(f"\n  ✓ Saved → {nonlinear_csv}")
+    print(f"\n  ✓ Saved MSE/BCE → {nonlinear_csv}")
+
+    # Write recall CSV
+    with open(nonlinear_recall_csv, "w", newline="") as fout:
+        writer = csv.DictWriter(fout, fieldnames=nln_recall_fields)
+        writer.writeheader()
+        for (seed, lr, activation), rows in nln_results.items():
+            for r in rows:
+                writer.writerow({
+                    "model":        "nonlinear",
+                    "seed":         seed,
+                    "lr":           lr,
+                    "activation":   activation,
+                    "epoch":        r["epoch"],
+                    "train_recall": r["train_recall"],
+                })
+    print(f"  ✓ Saved recall   → {nonlinear_recall_csv}")
     print("\nAll done.")
 
 
@@ -346,12 +372,9 @@ if __name__ == "__main__":
         help="Number of parallel worker processes (default: 1)"
     )
     parser.add_argument(
-        "--drop",
-        type=str,
-        nargs="*",
-        default=[],
-        help="Column names to drop from features before training (e.g. --drop col1 col2)"
+        "--drop", type=str, nargs="*", default=[],
+        help="Column names to drop from features (e.g. --drop col1 col2)"
     )
-    parser.add_argument("--outpath", type=str, required=True,help="Output path")
+    parser.add_argument("--outpath", type=str, required=True, help="Output directory")
     args = parser.parse_args()
-    run(args.config, outpath=args.outpath,workers=args.workers,drop_cols=args.drop)
+    run(args.config, outpath=args.outpath, workers=args.workers, drop_cols=args.drop)
