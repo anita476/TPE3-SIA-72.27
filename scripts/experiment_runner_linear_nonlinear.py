@@ -119,16 +119,28 @@ def _make_run_id(base: dict, model_type: str, seed: int) -> str:
 # Regression-style metrics (tolerance-based accuracy for continuous targets)
 # ---------------------------------------------------------------------------
 
+def _to_probability(predictions: np.ndarray) -> np.ndarray:
+    """Clip raw perceptron output to [0, 1] so --threshold is comparable across all model types."""
+    return np.clip(predictions, 0.0, 1.0)
+
+
 def _metrics_float(
     y_true: np.ndarray,
-    y_pred: np.ndarray,
-    tolerance: float,
+    y_pred_prob: np.ndarray,
+    threshold: float,
 ) -> tuple[float, float, float]:
-    """Return (tolerance-accuracy, MAE, MSE) for continuous predictions."""
-    matches = np.abs(y_pred - y_true) < tolerance
-    acc = float(np.mean(matches)) if len(y_true) else 0.0
-    mae = float(np.mean(np.abs(y_pred - y_true))) if len(y_true) else 0.0
-    mse = float(np.mean((y_pred - y_true) ** 2)) if len(y_true) else 0.0
+    """Return (threshold-accuracy, MAE, MSE) for continuous predictions.
+
+    y_pred_prob must already be clipped to [0, 1] via _to_probability().
+    Accuracy = fraction of samples where the binary decision matches the true label.
+    """
+    if len(y_true) == 0:
+        return 0.0, 0.0, 0.0
+    y_bin = (y_pred_prob >= threshold).astype(int)
+    y_true_bin = (y_true >= 0.5).astype(int)
+    acc = float(np.mean(y_bin == y_true_bin))
+    mae = float(np.mean(np.abs(y_pred_prob - y_true)))
+    mse = float(np.mean((y_pred_prob - y_true) ** 2))
     return acc, mae, mse
 
 
@@ -146,7 +158,7 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
     seed      = int(base["seed"])
     data_path = _resolve_data_path(base["data"])
     label_col = str(base.get("label", "label"))
-    tolerance = float(base["tolerance"])
+    threshold = float(base["threshold"])
 
     tp_raw   = base.get("test_per", 0.2)
     no_split = bool(base.get("no_split", False)) or tp_raw is None
@@ -159,7 +171,7 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
     y_stratify = (y >= 0.5).astype(int)
 
     if no_split:
-        if base.get("normalize") == "staload_datandard":
+        if base.get("normalize") == "standard":
             mean, std = standard_scale_params(X)
             X = standard_scale_apply(X, mean, std)
         X_train = X_test = X
@@ -213,8 +225,12 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         train_preds = (train_preds + 1) / 2
         test_preds = (test_preds + 1) / 2
 
-    train_acc, _, _       = _metrics_float(y_train, train_preds, tolerance)
-    test_acc, mae, mse    = _metrics_float(y_test,  test_preds,  tolerance)
+    # Clip all outputs to [0,1] so threshold has identical meaning across model types
+    train_preds = _to_probability(train_preds)
+    test_preds  = _to_probability(test_preds)
+
+    train_acc, _, _       = _metrics_float(y_train, train_preds, threshold)
+    test_acc, mae, mse    = _metrics_float(y_test,  test_preds,  threshold)
     final_train_mse       = float(np.mean((train_preds - y_train) ** 2)) if len(y_train) else 0.0
     final_test_mse        = float(np.mean((test_preds  - y_test)  ** 2)) if len(y_test)  else 0.0
     epochs_completed      = int(getattr(perceptron, "epochs_run_", base["epochs"]))
@@ -244,15 +260,15 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         best_prec = best["precision"]
         best_rec  = best["recall"]
 
-        # Fixed threshold = 0.5 (natural midpoint for logistic and tanh with labels in [0, 1])
-        half      = metrics_at_threshold(y_test, test_preds, threshold=0.5)
+        # Metrics at the configured threshold (comparable across model types)
+        half      = metrics_at_threshold(y_test, test_preds, threshold=threshold)
         f1_half   = half["f1"]
         prec_half = half["precision"]
         rec_half  = half["recall"]
 
     if n_train > 0:
         train_roc_auc_val = roc_auc(y_train, train_preds)
-        tr_half            = metrics_at_threshold(y_train, train_preds, threshold=0.5)
+        tr_half            = metrics_at_threshold(y_train, train_preds, threshold=threshold)
         train_f1_half      = tr_half["f1"]
         train_prec_half    = tr_half["precision"]
         train_rec_half     = tr_half["recall"]
@@ -295,7 +311,7 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         "lr":                   base["lr"],
         "epochs":               base["epochs"],
         "epsilon":              base["epsilon"],
-        "tolerance":            tolerance,
+        "threshold":            threshold,
         "activation":           act_name,
         "beta":                 base.get("beta", 1.0),
         "test_per":             tp_val,
@@ -323,14 +339,14 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         "best_f1":              _r(best_f1),
         "best_precision":       _r(best_prec),
         "best_recall":          _r(best_rec),
-        "f1_at_half":           _r(f1_half),
-        "precision_at_half":    _r(prec_half),
-        "recall_at_half":       _r(rec_half),
+        "f1_at_threshold":           _r(f1_half),
+        "precision_at_threshold":    _r(prec_half),
+        "recall_at_threshold":       _r(rec_half),
         # --- binary fraud metrics (train set — for overfitting diagnosis) ---
         "train_roc_auc":        _r(train_roc_auc_val),
-        "train_f1_at_half":     _r(train_f1_half),
-        "train_precision_at_half": _r(train_prec_half),
-        "train_recall_at_half": _r(train_rec_half),
+        "train_f1_at_threshold":     _r(train_f1_half),
+        "train_precision_at_threshold": _r(train_prec_half),
+        "train_recall_at_threshold": _r(train_rec_half),
         # --- metadata ---
         "confusion_meta_json":  json.dumps(meta, ensure_ascii=False),
     }
@@ -582,10 +598,12 @@ def main() -> None:
     print(f"Running {len(jobs)} jobs on {n_workers} worker(s)...")
 
     if n_workers <= 1:
-        out = [_worker(j,args.drop) for j in jobs]
+        out = [_worker(j, args.drop) for j in jobs]
     else:
+        import functools
+        worker_fn = functools.partial(_worker, drop_cols=args.drop)
         with mp.Pool(n_workers) as pool:
-            out = pool.map(_worker, jobs)
+            out = pool.map(worker_fn, jobs)
 
     summary_rows        = [o["summary"]           for o in out]
     all_cm:     list[dict] = [row for o in out for row in o["cm_rows"]]

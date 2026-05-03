@@ -31,8 +31,16 @@ def parse_arguments() -> argparse.Namespace:
     arguments.add_argument("--epochs", type=int, default=100, help="Number of epochs")
     arguments.add_argument("--data", type=str, required=True, help="Path to CSV file. Required")
     arguments.add_argument("--type_p", type=str, required=True, choices=["simple-step", "linear", "non-linear", "multilayer"], help="Perceptron type to use")
-    arguments.add_argument("--epsilon", type=float, default=0.001, help="Perceptron epsilon value (threshold). Default is 0.001")
-    arguments.add_argument("--tolerance", type=float, default=0.5, help="Tolerance for interpreting predictions as correct (for linear and non-linear perceptrons). Default is 0.5")
+    arguments.add_argument("--epsilon", type=float, default=0.001, help="Perceptron epsilon value . Default is 0.001")
+    arguments.add_argument(
+        "--threshold", type=float, default=0.5,
+        help=(
+            "Decision boundary in [0,1]: predict fraud if clipped output >= threshold. "
+            "All continuous model outputs are clipped to [0,1] before this comparison, "
+            "making the threshold directly comparable across linear and nonlinear models. "
+            "Lower values catch more fraud (higher recall, lower precision). Default: 0.5"
+        )
+    )
     arguments.add_argument("--test_per", type=float, default=0.2, help="Fraction for test split in decimals (for example 0.2 = 20%%)")
     arguments.add_argument("--seed", type=int, default=1, help="Random seed")
     arguments.add_argument("--activation", type=str, default="tanh", choices=["tanh", "logistic", "relu"], help="Activation function for non-linear and multilayer perceptrons. Default is tanh")
@@ -46,12 +54,8 @@ def parse_arguments() -> argparse.Namespace:
     arguments.add_argument("--label", type=str, default="label", help="Label column name to drop in data loading")
     arguments.add_argument("--drop", type=str, nargs="*", default=[], help="Column names to drop from features before training (e.g. --drop col1 col2)")
     arguments.add_argument(
-        "--normalize",
-        type=str,
-        default="none",
-        choices=["none", "standard"],
-        help="Feature scaling: 'standard' = zero mean / unit variance (fit on train only when split). "
-             "Use on real-world CSVs with mixed feature scales to avoid NaN weights.",
+        "--normalize", type=str, default="none", choices=["none", "standard"],
+        help="Feature scaling: 'standard' = zero mean / unit variance (fit on train only when split)."
     )
     return arguments.parse_args()
 
@@ -64,7 +68,35 @@ def load_data(path: str, label_col: str, drop_cols: list[str] = []):
     return X, y
 
 
+# ── output normalisation ──────────────────────────────────────────────────────
+
+def to_probability(predictions: np.ndarray) -> np.ndarray:
+    """
+    Clip raw perceptron output to [0, 1].
+
+    This is the single normalisation step applied to ALL continuous model types
+    (linear, non-linear, multilayer) before thresholding, so that --threshold
+    has identical semantics regardless of model type:
+
+      linear      raw output is unbounded → clip to [0,1]
+      non-linear  tanh output remapped to [0,1] by training script already;
+                  logistic/relu already in [0,1]. Clip is a no-op in practice
+                  but makes the pipeline robust.
+      multilayer  same as above.
+
+    The clip does NOT change predictions that are already in [0,1].
+    It only affects out-of-range linear outputs (e.g. 1.3 → 1.0, -0.1 → 0.0).
+    """
+    return np.clip(predictions, 0.0, 1.0)
+    #return predictions
+
+
 # ── metrics ───────────────────────────────────────────────────────────────────
+
+def _binarise(probs: np.ndarray, threshold: float) -> np.ndarray:
+    """Predict fraud (1) if probability >= threshold, else legitimate (0)."""
+    return (probs >= threshold).astype(int)
+
 
 def _confusion(y_true: np.ndarray, y_pred_binary: np.ndarray):
     """Return (TP, FP, FN, TN)."""
@@ -76,56 +108,60 @@ def _confusion(y_true: np.ndarray, y_pred_binary: np.ndarray):
 
 
 def _derived(tp, fp, fn, tn):
-    precision   = tp / (tp + fp)           if (tp + fp) > 0 else 0.0
-    recall      = tp / (tp + fn)           if (tp + fn) > 0 else 0.0
+    precision   = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall      = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1          = (2 * precision * recall / (precision + recall)
                    if (precision + recall) > 0 else 0.0)
-    specificity = tn / (tn + fp)           if (tn + fp) > 0 else 0.0
-    fpr         = fp / (fp + tn)           if (fp + tn) > 0 else 0.0
-    return precision, recall, f1, specificity, fpr
+    f2          = (5 * precision * recall / (4 * precision + recall)
+                   if (4 * precision + recall) > 0 else 0.0)
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    fpr         = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+    return precision, recall, f1, f2, specificity, fpr
 
 
 def _print_confusion(tp, fp, fn, tn):
     w = max(len(str(v)) for v in (tp, fp, fn, tn)) + 2
     w = max(w, 8)
     print("\n  Confusion Matrix:")
-    print(f"                  {'Pred 0':>{w}}   {'Pred 1':>{w}}")
+    print(f"                    {'Pred 0':>{w}}   {'Pred 1':>{w}}")
     print(f"  Actual 0 (legit)  {tn:{w}}   {fp:{w}}")
     print(f"  Actual 1 (fraud)  {fn:{w}}   {tp:{w}}")
 
 
-def _print_table(accuracy, correct, total, precision, recall, f1, specificity, fpr,
-                 mae=None, mse=None):
+def _print_table(accuracy, correct, total, precision, recall, f1, f2,
+                 specificity, fpr, mae=None, mse=None):
     print(f"\n  {'Metric':<26}  {'Value':>10}  Note")
-    print(f"  {'─'*26}  {'─'*10}  {'─'*38}")
+    print(f"  {'─'*26}  {'─'*10}  {'─'*42}")
     print(f"  {'Accuracy':<26}  {accuracy*100:>9.2f}%  ({correct}/{total})")
     print(f"  {'Precision':<26}  {precision*100:>9.2f}%  of predicted fraud, how many real")
-    print(f"  {'Recall / Sensitivity':<26}  {recall*100:>9.2f}%  of real fraud, how many caught")
+    print(f"  {'Recall / Sensitivity':<26}  {recall*100:>9.2f}%  of real fraud, how many caught  ★")
     print(f"  {'Specificity':<26}  {specificity*100:>9.2f}%  of real legit, how many correct")
-    print(f"  {'F1 Score':<26}  {f1:>10.4f}")
+    print(f"  {'F1 Score':<26}  {f1:>10.4f}  harmonic mean precision & recall")
+    print(f"  {'F2 Score':<26}  {f2:>10.4f}  recall weighted 2× over precision  ★")
     print(f"  {'False Positive Rate':<26}  {fpr*100:>9.2f}%  legit flagged as fraud")
     if mae is not None:
-        print(f"  {'MAE':<26}  {mae:>10.4f}")
+        print(f"  {'MAE (raw output)':<26}  {mae:>10.4f}")
     if mse is not None:
-        print(f"  {'MSE':<26}  {mse:>10.4f}")
+        print(f"  {'MSE (raw output)':<26}  {mse:>10.4f}")
 
 
-def print_metrics(y_true: np.ndarray, predictions: np.ndarray, tolerance: float):
-    """Full metrics for continuous-output perceptrons (linear / non-linear / multilayer)."""
-    total    = len(y_true)
-    matches  = np.abs(predictions - y_true) < tolerance
-    correct  = int(np.sum(matches))
-    accuracy = correct / total
-    mae      = float(np.mean(np.abs(predictions - y_true)))
-    mse      = float(np.mean((predictions - y_true) ** 2))
+def print_metrics(y_true: np.ndarray, predictions: np.ndarray,
+                  probs: np.ndarray, threshold: float, model_type: str):
+    """Full metrics for continuous-output perceptrons."""
+    total  = len(y_true)
+    mae    = float(np.mean(np.abs(predictions - y_true)))
+    mse    = float(np.mean((predictions - y_true) ** 2))
 
-    # binarise: prediction is "fraud" when output is closer to 1 than to 0
-    y_bin = (np.abs(predictions - 1) < tolerance).astype(int)
+    y_bin          = _binarise(probs, threshold)
     tp, fp, fn, tn = _confusion(y_true, y_bin)
-    precision, recall, f1, specificity, fpr = _derived(tp, fp, fn, tn)
+    correct        = tp + tn
+    accuracy       = correct / total
+    precision, recall, f1, f2, specificity, fpr = _derived(tp, fp, fn, tn)
 
+    print(f"\n  Model     : {model_type}")
+    print(f"  Threshold : {threshold}  → fraud if clipped_output >= {threshold}")
     _print_confusion(tp, fp, fn, tn)
-    _print_table(accuracy, correct, total, precision, recall, f1,
+    _print_table(accuracy, correct, total, precision, recall, f1, f2,
                  specificity, fpr, mae=mae, mse=mse)
 
     actual_fraud = int(np.sum(y_true == 1))
@@ -142,10 +178,10 @@ def print_metrics_step(y_true: np.ndarray, predictions: np.ndarray):
     accuracy = correct / total
 
     tp, fp, fn, tn = _confusion(y_true, predictions.astype(int))
-    precision, recall, f1, specificity, fpr = _derived(tp, fp, fn, tn)
+    precision, recall, f1, f2, specificity, fpr = _derived(tp, fp, fn, tn)
 
     _print_confusion(tp, fp, fn, tn)
-    _print_table(accuracy, correct, total, precision, recall, f1, specificity, fpr)
+    _print_table(accuracy, correct, total, precision, recall, f1, f2, specificity, fpr)
 
     actual_fraud = int(np.sum(y_true == 1))
     if actual_fraud > 0:
@@ -160,6 +196,9 @@ def print_metrics_step(y_true: np.ndarray, predictions: np.ndarray):
 def main():
     args = parse_arguments()
     print(f"Running perceptron {args.type_p} with {args.epochs} epochs and learning rate of {args.lr}\n")
+
+    if not (0.0 <= args.threshold <= 1.0):
+        raise ValueError(f"--threshold must be in [0, 1], got {args.threshold}")
 
     X, y = load_data(args.data, args.label, args.drop)
     X = X.astype(np.float64, copy=False)
@@ -203,22 +242,24 @@ def main():
         return
 
     if args.type_p in ("linear", "non-linear", "multilayer"):
-        tolerance = args.tolerance
+        probs = to_probability(predictions)   # clip to [0,1] — same for all types
+
         print(f"\nResults on test set ({total} samples):")
-        for i, (pred, expected) in enumerate(zip(predictions, y_test, strict=True)):
-            match = "OK" if abs(pred - expected) < tolerance else "X"
-            print(f"  sample {i + 1}: predicted={pred:.4f}  expected={int(expected)}  {match}")
+        for i, (raw, prob, expected) in enumerate(zip(predictions, probs, y_test, strict=True)):
+            decision = "FRAUD" if prob >= args.threshold else "legit"
+            match    = "OK" if (int(prob >= args.threshold) == int(expected)) else "X"
+            print(f"  sample {i+1}: raw={raw:.4f}  p={prob:.4f}  → {decision:<5}  expected={int(expected)}  {match}")
 
-        print(f"\n── Metrics (tolerance={tolerance}) " + "─" * 42)
-        print_metrics(y_test, predictions, tolerance)
+        print(f"\n── Metrics " + "─" * 55)
+        print_metrics(y_test, predictions, probs, args.threshold, args.type_p)
 
-    else:  # simple-step
+    else:  # simple-step — no threshold needed, output is already binary
         print(f"\nResults on test set ({total} samples):")
         for i, (pred, expected) in enumerate(zip(predictions, y_test, strict=True)):
             match = "OK" if pred == expected else "X"
             print(f"  sample {i + 1}: predicted={int(pred)}  expected={int(expected)}  {match}")
 
-        print("\n── Metrics " + "─" * 50)
+        print("\n── Metrics " + "─" * 55)
         print_metrics_step(y_test, predictions)
 
 

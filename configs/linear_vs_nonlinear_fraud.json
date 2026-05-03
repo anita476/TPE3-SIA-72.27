@@ -5,7 +5,7 @@
     "label": "flagged_fraud",
     "epochs": 1000,
     "epsilon": 0.01,
-    "tolerance": 0.5,
+    "threshold": 0.5,
     "normalize": "standard",
     "beta": 1.0
   },
