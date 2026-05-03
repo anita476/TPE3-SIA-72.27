@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import argparse
 import numpy as np
@@ -12,10 +13,11 @@ from utils.visualization import print_summary, plot_accuracy_bars, plot_val_accu
 RESULTS_DIR = "results"
 MODELS_DIR  = os.path.join(RESULTS_DIR, "models")
 
-TRAIN_PATH = "data/digits.csv"
+TRAIN_PATH = "datasets/digits.csv"
 SEED       = 1
 VALID_OPTIMIZERS = {"gd", "sgd", "rmsprop", "adam"}
 OFF_TARGET_BY_ACTIVATION = {"logistic": 0.0, "tanh": -1.0}
+VALID_OUTPUT_ACTIVATIONS = {"same", "softmax"}
 
 
 def load_digits(path):
@@ -23,12 +25,15 @@ def load_digits(path):
     return np.stack(df["image"].to_numpy()), df["label"].to_numpy(dtype=np.int64)
 
 
-def encode_one_hot(labels, n_outputs, activation="tanh"):
+def encode_one_hot(labels, n_outputs, activation="tanh", output_activation="same"):
     if activation not in OFF_TARGET_BY_ACTIVATION:
         raise ValueError("activation must be 'tanh' or 'logistic'")
+    if output_activation not in VALID_OUTPUT_ACTIVATIONS:
+        raise ValueError("output_activation must be 'same' or 'softmax'")
 
     labels = labels.astype(int)
-    targets = np.full((len(labels), n_outputs), OFF_TARGET_BY_ACTIVATION[activation])
+    off_target = 0.0 if output_activation == "softmax" else OFF_TARGET_BY_ACTIVATION[activation]
+    targets = np.full((len(labels), n_outputs), off_target)
     targets[np.arange(len(labels)), labels] = 1.0
     return targets
 
@@ -67,8 +72,9 @@ def count_params(layers):
 def run_experiment(config, X_train, train_labels, X_eval, eval_labels):
     print(f"\n--- {config['name']} ---")
     activation = config.get("activation", "tanh")
-    y_train = encode_one_hot(train_labels, config["layers"][-1], activation)
-    y_eval = encode_one_hot(eval_labels, config["layers"][-1], activation)
+    output_activation = config.get("output_activation", "same")
+    y_train = encode_one_hot(train_labels, config["layers"][-1], activation, output_activation)
+    y_eval = encode_one_hot(eval_labels, config["layers"][-1], activation, output_activation)
 
     mlp = MultiLayerPerceptron(
         config["layers"], config["lr"], config["epochs"],
@@ -80,6 +86,7 @@ def run_experiment(config, X_train, train_labels, X_eval, eval_labels):
         optimizer=config.get("optimizer", "sgd"),
         patience=config.get("patience", 0),
         min_delta=config.get("min_delta", 0.0),
+        output_activation=output_activation,
     )
     mlp.fit(X_train, y_train, X_val=X_eval, y_val=y_eval,
             val_labels=eval_labels, train_labels=train_labels, name=config["name"])
@@ -166,13 +173,21 @@ def main():
 
     args = [(c, X_train, train_labels, X_val, val_labels)
             for c in experiments]
-
+    start = time.time()
+    time_start = time.localtime(start)
+    print(time.strftime("Starting experiments at %Y-%m-%d %H:%M:%S", time_start))
     n_workers = min(len(experiments), mp.cpu_count())
     print(f"Running {len(experiments)} experiments on {n_workers} cores...")
     with mp.Pool(n_workers) as pool:
         results = pool.map(_worker, args)
 
     results.sort(key=lambda r: r["name"])
+    end = time.time()
+    time_end = time.localtime(end)
+    elapsed = end - start
+    print(time.strftime("Ending experiments at %Y-%m-%d %H:%M:%S", time_end)
+    + f", total elapsed time: {elapsed:.2f}s"
+    )   
     print_summary(results)
     plot_accuracy_bars(results)
     plot_val_accuracy(results)

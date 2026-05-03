@@ -16,22 +16,38 @@ def _logistic(h, beta=1.0):
 def _logistic_derivative(g_h, beta=1.0):
     return 2 * beta * g_h * (1 - g_h)
 
+def _softmax(h):
+    h = np.asarray(h, dtype=float)
+    if h.ndim == 1:
+        shifted = h - np.max(h)
+        exp_h = np.exp(shifted)
+        return exp_h / np.sum(exp_h)
+
+    shifted = h - np.max(h, axis=1, keepdims=True)
+    exp_h = np.exp(shifted)
+    return exp_h / np.sum(exp_h, axis=1, keepdims=True)
+
 ACTIVATIONS = {
     "tanh": (_tanh, _tanh_derivative),
     "logistic": (_logistic, _logistic_derivative),
 }
 TRAINING_MODES = {"online", "minibatch", "batch"}
+OUTPUT_ACTIVATIONS = {"same", "softmax"}
 
 class MultiLayerPerceptron:
     """Feed-forward multilayer perceptron trained with backpropagation."""
 
-    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd", weight_decay=0.0, patience=0, min_delta=0.0):
+    def __init__(self, layers, learning_rate, epochs, epsilon, seed, beta=1.0, activation="tanh", initializer="random", training_mode="online", batch_size=1, optimizer="sgd", weight_decay=0.0, patience=0, min_delta=0.0, output_activation="same"):
         if len(layers) < 2:
             raise ValueError("layers must contain at least input and output sizes")
         if activation not in ACTIVATIONS:
             activation = "tanh"
         if training_mode not in TRAINING_MODES:
             raise ValueError(f"training_mode must be one of {sorted(TRAINING_MODES)}")
+        if output_activation not in OUTPUT_ACTIVATIONS:
+            raise ValueError(f"output_activation must be one of {sorted(OUTPUT_ACTIVATIONS)}")
+        if output_activation == "softmax" and layers[-1] < 2:
+            raise ValueError("softmax output requires at least two output neurons")
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
 
@@ -42,6 +58,7 @@ class MultiLayerPerceptron:
         self.epsilon = epsilon
         self.beta = beta
         self.activation = activation
+        self.output_activation = output_activation
         self.g, self.g_prime = ACTIVATIONS[activation]
         self.seed = seed
         self.rng = np.random.default_rng(seed)
@@ -81,15 +98,25 @@ class MultiLayerPerceptron:
             activations – list of (n, layer_size) arrays; [0] is the input.
         """
         activations = [np.asarray(X, dtype=float)]
-        for W, b in zip(self.weights, self.biases):
-            activations.append(self.g(activations[-1] @ W.T + b, self.beta))
+        last_layer = len(self.weights) - 1
+        for i, (W, b) in enumerate(zip(self.weights, self.biases)):
+            h = activations[-1] @ W.T + b
+            if i == last_layer and self.output_activation == "softmax":
+                activations.append(_softmax(h))
+            else:
+                activations.append(self.g(h, self.beta))
         return activations
 
     def _forward(self, x):
         """Single-sample forward pass."""
         activations = [np.asarray(x, dtype=float)]
-        for W, b in zip(self.weights, self.biases):
-            activations.append(self.g(W @ activations[-1] + b, self.beta))
+        last_layer = len(self.weights) - 1
+        for i, (W, b) in enumerate(zip(self.weights, self.biases)):
+            h = W @ activations[-1] + b
+            if i == last_layer and self.output_activation == "softmax":
+                activations.append(_softmax(h))
+            else:
+                activations.append(self.g(h, self.beta))
         return activations
 
     # ------------------------------------------------------------------
@@ -118,7 +145,8 @@ class MultiLayerPerceptron:
             db = [None] * len(self.biases)
 
             # Output layer: δ = (ŷ − y) ⊙ g'(g(h)),  shape (n, output_size)
-            delta = (activations[-1] - y_batch) * self.g_prime(activations[-1], self.beta)
+            # For softmax, this applies the MSE softmax Jacobian instead.
+            delta = self._output_delta(activations[-1], y_batch)
             # dW = (1/n) δᵀ A_prev + λW,  shape (fan_out, fan_in) = W shape
             dW[-1] = delta.T @ activations[-2] / n + self.weight_decay * self.weights[-1]
             db[-1] = delta.mean(axis=0)
@@ -130,6 +158,13 @@ class MultiLayerPerceptron:
                 db[l] = delta.mean(axis=0)
 
             self.optimizer.update(self.weights, dW, self.biases, db)
+
+    def _output_delta(self, output, target):
+        error = output - target
+        if self.output_activation == "softmax":
+            projected_error = np.sum(error * output, axis=1, keepdims=True)
+            return output * (error - projected_error)
+        return error * self.g_prime(output, self.beta)
 
     def train_epoch(self, X, y):
         indices = self.rng.permutation(X.shape[0])
@@ -208,8 +243,13 @@ class MultiLayerPerceptron:
     def predict(self, X):
         """Vectorized predict for a batch X of shape (n, fan_in)."""
         a = np.asarray(X, dtype=float)
-        for W, b in zip(self.weights, self.biases):
-            a = self.g(a @ W.T + b, self.beta)
+        last_layer = len(self.weights) - 1
+        for i, (W, b) in enumerate(zip(self.weights, self.biases)):
+            h = a @ W.T + b
+            if i == last_layer and self.output_activation == "softmax":
+                a = _softmax(h)
+            else:
+                a = self.g(h, self.beta)
         # Single-output networks: return flat vector instead of (n, 1).
         return a.flatten() if a.shape[1] == 1 else a
 
@@ -232,6 +272,7 @@ class MultiLayerPerceptron:
             "epsilon":       self.epsilon,
             "beta":          self.beta,
             "activation":    self.activation,
+            "output_activation": self.output_activation,
             "training_mode": self.training_mode,
             "batch_size":    self.batch_size,
             "weight_decay":  self.weight_decay,
@@ -279,6 +320,7 @@ class MultiLayerPerceptron:
             seed=config.get("seed", seed),
             beta=config["beta"],
             activation=config["activation"],
+            output_activation=config.get("output_activation", "same"),
             training_mode=config.get("training_mode", "online"),
             batch_size=config.get("batch_size", 1),
             optimizer=config.get("optimizer", "sgd"),
