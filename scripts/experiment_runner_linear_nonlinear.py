@@ -136,7 +136,7 @@ def _metrics_float(
 # Single experiment
 # ---------------------------------------------------------------------------
 
-def run_single(job: tuple[dict, str]) -> dict:
+def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
     """Train one perceptron (linear or non-linear) on the fraud dataset.
 
     Returns a dict with keys: summary, cm_rows, curve_rows, roc_rows,
@@ -151,7 +151,7 @@ def run_single(job: tuple[dict, str]) -> dict:
     tp_raw   = base.get("test_per", 0.2)
     no_split = bool(base.get("no_split", False)) or tp_raw is None
 
-    X, y = load_data(data_path, label_col)
+    X, y = load_data(data_path, label_col,drop_cols)
     X = X.astype(np.float64, copy=False)
     y = y.astype(np.float64, copy=False)
 
@@ -159,7 +159,7 @@ def run_single(job: tuple[dict, str]) -> dict:
     y_stratify = (y >= 0.5).astype(int)
 
     if no_split:
-        if base.get("normalize") == "standard":
+        if base.get("normalize") == "staload_datandard":
             mean, std = standard_scale_params(X)
             X = standard_scale_apply(X, mean, std)
         X_train = X_test = X
@@ -505,8 +505,8 @@ def expand_jobs(bases: list[dict]) -> list[tuple[dict, str]]:
     return jobs
 
 
-def _worker(job: tuple[dict, str]) -> dict:
-    return run_single(job)
+def _worker(job: tuple[dict, str], drop_cols : list[str]) -> dict:
+    return run_single(job,drop_cols)
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +534,13 @@ def parse_args() -> argparse.Namespace:
         default=1,
         metavar="N",
         help="Parallel worker processes (default: 1 = serial). Capped by job count.",
+    )
+    p.add_argument(
+        "--drop",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Column names to drop from features before training (e.g. --drop col1 col2)"
     )
     return p.parse_args()
 
@@ -575,7 +582,7 @@ def main() -> None:
     print(f"Running {len(jobs)} jobs on {n_workers} worker(s)...")
 
     if n_workers <= 1:
-        out = [_worker(j) for j in jobs]
+        out = [_worker(j,args.drop) for j in jobs]
     else:
         with mp.Pool(n_workers) as pool:
             out = pool.map(_worker, jobs)

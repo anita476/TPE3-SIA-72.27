@@ -94,16 +94,23 @@ def tanh_pred_to_prob(y_pred: np.ndarray) -> np.ndarray:
     return (y_pred + 1.0) / 2.0
 
 
-def load_data(path: str, label: str) -> tuple[np.ndarray, np.ndarray]:
+def load_data(path: str, label: str, drop_cols: list[str] = []) -> tuple[np.ndarray, np.ndarray]:
     df = pd.read_csv(path)
     if label not in df.columns:
         raise ValueError(
             f"Label column '{label}' not found. "
             f"Available: {list(df.columns)}"
         )
+
+    cols_to_drop = [label] + [c for c in drop_cols if c in df.columns]
     y = df[label].values.astype(float)
-    X = df.drop(columns=[label]).select_dtypes(include=[np.number]).values.astype(float)
+    X = (
+        df.drop(columns=cols_to_drop)
+        .select_dtypes(include=[np.number])
+        .values.astype(float)
+    )
     return X, y
+
 
 
 # ── training loop ────────────────────────────────────────────────────────────
@@ -208,7 +215,7 @@ def _run_nonlinear_job(args_tuple):
 
 
 
-def run(config_path: str, outpath: str,workers: int) -> None:
+def run(config_path: str, outpath: str,workers: int,drop_cols: list[str] = []) -> None:
     with open(config_path) as f:
         cfg = json.load(f)
 
@@ -226,7 +233,7 @@ def run(config_path: str, outpath: str,workers: int) -> None:
     beta    = base.get("beta", 1.0)
 
     print(f"Loading data: {base['data']}")
-    X, y = load_data(base["data"], base["label"])
+    X, y = load_data(base["data"], base["label"],drop_cols)
     X    = normalize(X, norm)
     print(
         f"  {X.shape[0]} samples | {X.shape[1]} features | "
@@ -338,6 +345,13 @@ if __name__ == "__main__":
         "--workers", type=int, default=1,
         help="Number of parallel worker processes (default: 1)"
     )
+    parser.add_argument(
+        "--drop",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Column names to drop from features before training (e.g. --drop col1 col2)"
+    )
     parser.add_argument("--outpath", type=str, required=True,help="Output path")
     args = parser.parse_args()
-    run(args.config, outpath=args.outpath,workers=args.workers)
+    run(args.config, outpath=args.outpath,workers=args.workers,drop_cols=args.drop)
