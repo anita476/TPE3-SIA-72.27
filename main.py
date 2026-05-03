@@ -79,7 +79,7 @@ def to_probability(predictions: np.ndarray) -> np.ndarray:
     has identical semantics regardless of model type:
 
       linear      raw output is unbounded → clip to [0,1]
-      non-linear  tanh output remapped to [0,1] by training script already;
+      non-linear  tanh output remapped to [0,1] by the caller before this call;
                   logistic/relu already in [0,1]. Clip is a no-op in practice
                   but makes the pipeline robust.
       multilayer  same as above.
@@ -242,6 +242,8 @@ def main():
         return
 
     if args.type_p in ("linear", "non-linear", "multilayer"):
+        if args.type_p == "non-linear" and args.activation == "tanh":
+            predictions = (predictions + 1.0) / 2.0
         probs = to_probability(predictions)   # clip to [0,1] — same for all types
 
         print(f"\nResults on test set ({total} samples):")

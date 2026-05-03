@@ -1,17 +1,3 @@
-"""
-Genera todos los gráficos del Ejercicio 1 — Destilacion de conocimiento.
-
-Cada archivo tiene un prefijo que indica a que pregunta de la consigna responde:
-
-  q1ab_*  ->  Parte 1 Q a+b: Underfitting / Saturacion de capacidad
-  q1c_*   ->  Parte 1 Q c:   Que perceptron selecciónar para generalización
-  q2a_*   ->  Parte 2 Q a:   Justificación de métricas de evaluación
-  q2b_*   ->  Parte 2 Q b:   Estrategia de datos y mejor conjunto de entrenamiento
-  q2c_*   ->  Parte 2 Q c:   Mejor modelo + recomendación de umbral de fraude
-
-Uso:
-    python scripts/plot_ej1.py
-"""
 from __future__ import annotations
 
 import sys
@@ -41,7 +27,6 @@ RESULTS = ROOT / "results"
 PLOTS   = ROOT / "plots" / "ej1"
 PLOTS.mkdir(parents=True, exist_ok=True)
 
-# Colores fijos: azul = lineal, naranja = no-lineal (PAIRWISE_COLORS)
 COLOR_LINEAR    = PAIRWISE_COLORS[0]["box_face"]   # "#4a90d9"
 COLOR_NONLINEAR = PAIRWISE_COLORS[1]["box_face"]   # "#e67e22"
 COLORS_MT = {"linear": COLOR_LINEAR, "non-linear": COLOR_NONLINEAR}
@@ -56,7 +41,9 @@ COLORS_ACT = {
 }
 
 LABEL_MT  = {"linear": "Lineal", "non-linear": "No lineal"}
-LABEL_ACT = {"logistic": "Log\u00edstica", "tanh": "Tanh", "relu": "ReLU"}
+LABEL_ACT = {"logistic": "Logística", "tanh": "Tanh", "relu": "ReLU"}
+
+SHOW_ACTIVATIONS: list[str] | None = ["tanh", "logistic"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers de estilo
@@ -103,13 +90,16 @@ def _boxplot(ax: plt.Axes, data: list[list[float]], positions: list[int],
 
 def _remove_outliers_iqr(values: list[float], factor: float = 1.5) -> list[float]:
     """Elimina outliers usando las cercas de Tukey (factor * IQR)."""
-    if len(values) <= 2:
-        return list(values)
-    arr = np.asarray(values, dtype=float)
+    finite = [v for v in values if np.isfinite(v)]
+    if not finite:
+        return []
+    if len(finite) <= 2:
+        return finite
+    arr = np.asarray(finite, dtype=float)
     q1, q3 = np.percentile(arr, [25, 75])
     iqr = float(q3 - q1)
     if iqr <= 0:
-        return list(values)
+        return list(finite)
     lo, hi = q1 - factor * iqr, q3 + factor * iqr
     filtered = [float(x) for x in arr if lo <= x <= hi]
     return filtered if filtered else [float(np.median(arr))]
@@ -177,7 +167,8 @@ def _seed_curves(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ]
     if not seed_arrays:
         return np.array([]), np.array([]), np.array([])
-    n = min(len(a) for a in seed_arrays)
+    lengths = [len(a) for a in seed_arrays]
+    n = min(lengths)
     mat  = np.array([a[:n] for a in seed_arrays])
     mean = mat.mean(axis=0)
     std  = mat.std(axis=0)
@@ -188,7 +179,8 @@ def _prefer_full_dataset(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
     """Prefer no_split=True; fallback to all rows if that subset is empty."""
     full = df[df["no_split"] == True]
     if full.empty:
-        print(f"  aviso: no hay filas no_split=True en {source_name}; se usan todas las filas disponibles.")
+        print(f"  aviso: no hay filas no_split=True en {source_name}; "
+              "se usa la partición con menor test_per como aproximación.")
         return df
     return full
 
@@ -197,7 +189,10 @@ def _activations_for_nl_panels(df: pd.DataFrame, col: str = "activation") -> lis
     """Activaciones por columna de panel: excluye ``identity`` (solo usada en el lineal)."""
     raw = df[col].dropna().unique()
     acts = sorted(raw, key=lambda x: str(x).lower())
-    return [a for a in acts if str(a).lower() != "identity"]
+    acts = [a for a in acts if str(a).lower() != "identity"]
+    if SHOW_ACTIVATIONS is not None:
+        acts = [a for a in acts if a in SHOW_ACTIVATIONS]
+    return acts
 
 
 # =============================================================================
@@ -210,6 +205,12 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
     print("Q1a+Q1b — curvas de aprendizaje ...")
     full = _prefer_full_dataset(summary, "summary")
     c    = _prefer_full_dataset(curves, "curves")
+    data_label = "dataset completo" if full["no_split"].any() else "partición train/test"
+
+    if not c["no_split"].any():
+        min_tp = c["test_per"].dropna().min()
+        c    = c[c["test_per"] == min_tp]
+        full = full[full["test_per"] == min_tp]
 
     activations = _activations_for_nl_panels(full)
     if not activations:
@@ -237,15 +238,8 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
             n_seeds = int(sub["seed"].nunique()) if not sub.empty else 0
             all_curve_data[(act, mt)] = (best, xs, mean, std, n_seeds)
 
-    # y_cap: maximo de (media + desvio) despues de la epoca 30, en todas las curvas
-    stable_vals: list[float] = []
-    for _, (_, xs, mean, std, _) in all_curve_data.items():
-        if xs.size > 30:
-            stable_vals.extend((mean[30:] + std[30:]).tolist())
-    y_cap = float(np.percentile(stable_vals, 99)) * 1.35 if stable_vals else 0.1
-
     with plt.rc_context(PLOT_RC):
-        fig, axes = plt.subplots(1, n, figsize=(FIG_SIZE[0], FIG_SIZE[1]), sharey=True)
+        fig, axes = plt.subplots(1, n, figsize=(FIG_SIZE[0], FIG_SIZE[1]), sharey=False)
         if n == 1:
             axes = [axes]
 
@@ -256,19 +250,19 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
                     continue
                 ax.plot(xs, mean, color=COLORS_MT[mt], linewidth=2,
                         label=f"{LABEL_MT[mt]}  (lr={best}, n={n_seeds})")
-                ax.fill_between(xs, np.maximum(mean - std, 0), mean + std,
+                ax.fill_between(xs, np.maximum(mean - std, 1e-8), mean + std,
                                 color=COLORS_MT[mt], alpha=0.18)
 
+            ax.set_yscale("log")
             ax.set_title(f"Activaci\u00f3n: {LABEL_ACT.get(act, act)}", fontsize=11)
             ax.set_xlabel("\u00c9poca")
             if ax.lines:
                 ax.legend(fontsize=8)
             ax.xaxis.set_major_locator(MaxNLocator(6, integer=True))
 
-        axes[0].set_ylim(bottom=0, top=y_cap)
-        axes[0].set_ylabel("MSE de entrenamiento  (media \u00b1 desv\u00edo, 10 semillas)")
+        axes[0].set_ylabel("MSE de entrenamiento  (escala log, media \u00b1 desv\u00edo, 10 semillas)")
         fig.suptitle(
-            "Q1a + Q1b  \u2014  Curvas de aprendizaje (dataset completo, mejor lr por modelo)\n"
+            f"Q1a + Q1b  \u2014  Curvas de aprendizaje ({data_label}, mejor lr por modelo)\n"
             "Underfitting: MSE se mantiene alto tras convergencia  |  "
             "Saturaci\u00f3n: la curva se aplana sin descender",
             fontsize=10,
@@ -314,13 +308,14 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
                 positions_l.append(base)
                 positions_nl.append(base + 1)
                 # IQR con factor=3 para eliminar solo divergencias extremas
+                # _remove_outliers_iqr ya descarta Inf/NaN internamente
                 dl  = _remove_outliers_iqr(
                     af_l[af_l["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
                 dnl = _remove_outliers_iqr(
                     af_nl[af_nl["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
-                # Escala log requiere valores > 0
-                data_l.append([max(v, 1e-6) for v in dl])
-                data_nl.append([max(v, 1e-6) for v in dnl])
+                # Escala log requiere valores > 0 y finitos
+                data_l.append([max(v, 1e-6) for v in dl if np.isfinite(v)])
+                data_nl.append([max(v, 1e-6) for v in dnl if np.isfinite(v)])
                 tick_pos.append(base + 0.5)
                 tick_lbl.append(f"{lr:.0e}" if lr < 0.01 else str(lr))
 
@@ -440,7 +435,7 @@ def plot_q1c(summary: pd.DataFrame) -> None:
         metric="train_roc_auc",
         ylabel="ROC-AUC de entrenamiento",
         use_log=False,
-        ylim_fixed=(0.96, 1.005),
+        ylim_fixed=None,
         suptitle=(
             "Q1c  \u2014  Capacidad de aprendizaje: ROC-AUC al mejor LR\n"
             "No lineal (log\u00edstica/ReLU) logra mayor AUC que lineal "
@@ -490,6 +485,9 @@ def plot_q2a(summary: pd.DataFrame) -> None:
 
         # Panel 2: accuracy vs ROC-AUC por tipo de modelo (solo mejor LR)
         split_best = _filter_best_lr(split)
+        # Baseline calculado sobre el mismo subconjunto que los boxplots
+        fr_best = split_best["fraud_rate_test"].dropna()
+        baseline = 1 - (fr_best.mean() if not fr_best.empty else fr.mean())
 
         def _mt_tick_label(df_filt, mt: str) -> str:
             sub = df_filt[df_filt["model_type"] == mt]
@@ -514,7 +512,6 @@ def plot_q2a(summary: pd.DataFrame) -> None:
             ax.set_ylim(*ylim)
             # Linea de referencia: baseline trivial para accuracy
             if "acc" in metric:
-                baseline = 1 - fr.mean()
                 ax.axhline(baseline, color=STYLE["grid"], linestyle="--",
                            linewidth=1.2,
                            label=f"Baseline trivial: {baseline:.1%}")
@@ -675,14 +672,18 @@ def plot_q2c_roc(roc_df: pd.DataFrame, summary: pd.DataFrame) -> None:
     print("Q2c — curva ROC del mejor modelo ...")
     split = summary[summary["no_split"] == False]
 
-    # Mejor configuracion no lineal
+    # Mejor configuracion no lineal (restringido a non-linear; Q1c ya eligió éste)
     best_mt, best_act, best_lr = (
-        split.groupby(["model_type", "activation", "lr"])["roc_auc"]
+        split[split["model_type"] == "non-linear"]
+        .groupby(["model_type", "activation", "lr"])["roc_auc"]
         .mean().idxmax()
     )
-    best_auc = (
-        split.groupby(["model_type", "activation", "lr"])["roc_auc"]
-        .mean().max()
+    best_auc = float(
+        split[
+            (split["model_type"] == best_mt) &
+            (split["activation"] == best_act) &
+            (split["lr"] == best_lr)
+        ]["roc_auc"].mean()
     )
     print(f"  mejor: {best_mt} / {best_act} / lr={best_lr}  "
           f"(AUC medio={best_auc:.4f})")
@@ -768,7 +769,8 @@ def plot_q2c_umbral(summary: pd.DataFrame, roc_df: pd.DataFrame) -> None:
     split = summary[summary["no_split"] == False]
 
     best_mt, best_act, best_lr = (
-        split.groupby(["model_type", "activation", "lr"])["roc_auc"]
+        split[split["model_type"] == "non-linear"]
+        .groupby(["model_type", "activation", "lr"])["roc_auc"]
         .mean().idxmax()
     )
     best_runs = split[
@@ -789,9 +791,9 @@ def plot_q2c_umbral(summary: pd.DataFrame, roc_df: pd.DataFrame) -> None:
     for _, grp in sub_roc.groupby(["seed", "test_per"]):
         g = grp.sort_values("threshold")
         p = np.interp(common_thr, g["threshold"].to_numpy(),
-                      g["precision"].to_numpy(), left=1.0, right=0.0)
+                      g["precision"].to_numpy(), left=0.0, right=0.0)
         r = np.interp(common_thr, g["threshold"].to_numpy(),
-                      g["recall"].to_numpy(), left=0.0, right=0.0)
+                      g["recall"].to_numpy(), left=1.0, right=0.0)
         denom = p + r
         f1 = np.where(denom > 0, 2 * p * r / denom, 0.0)
         prec_list.append(p)
@@ -880,7 +882,8 @@ def plot_q2c_confusion(summary: pd.DataFrame) -> None:
     split = summary[summary["no_split"] == False]
 
     best_mt, best_act, best_lr = (
-        split.groupby(["model_type", "activation", "lr"])["roc_auc"]
+        split[split["model_type"] == "non-linear"]
+        .groupby(["model_type", "activation", "lr"])["roc_auc"]
         .mean().idxmax()
     )
     best_runs = split[
@@ -905,8 +908,8 @@ def plot_q2c_confusion(summary: pd.DataFrame) -> None:
     FN = P - TP
     TN = N - FP
 
-    cm = np.array([[TP, FP], [FN, TN]])
-    labels = [["VP", "FP"], ["FN", "VN"]]
+    cm = np.array([[TP, FN], [FP, TN]])
+    labels = [["VP", "FN"], ["FP", "VN"]]
 
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, 2, figsize=(FIG_SIZE[0] * 0.9, FIG_SIZE[1]),
@@ -1005,21 +1008,6 @@ def main() -> None:
     plot_q2c_roc(roc_df, summary)
     plot_q2c_umbral(summary, roc_df)
     plot_q2c_confusion(summary)
-
-    print("\nListo. gráficos guardados en plots/ej1/")
-    print()
-    print("Archivo                             -> Pregunta")
-    print("-" * 65)
-    print("q1ab_curvas_aprendizaje.png         -> Q1a (underfitting?) + Q1b (saturacion?)")
-    print("q1ab_sensibilidad_lr.png            -> Q1a+Q1b (efecto del LR en underfitting/saturacion)")
-    print("q1c_roc_auc.png                     -> Q1c (que perceptron seleccionar? — AUC)")
-    print("q1c_mse_final.png                   -> Q1c (que perceptron seleccionar? — MSE)")
-    print("q2a_justificacion_metricas.png      -> Q2a (que metricas y por que?)")
-    print("q2b_generalizacion_vs_split.png     -> Q2b (mejor tamano de conjunto de entrenamiento?)")
-    print("q2b_overfitting_diagnostico.png     -> Q2b (hay overfitting? diagnostico)")
-    print("q2c_curva_roc.png                   -> Q2c (mejor modelo?)")
-    print("q2c_umbral_recomendado.png          -> Q2c (recomendacion de umbral de fraude)")
-    print("q2c_modelo_final.png                -> Q2c (presentacion del modelo al cliente)")
 
 
 if __name__ == "__main__":

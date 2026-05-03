@@ -203,27 +203,17 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
 
     act_name = str(base.get("activation", "tanh"))
 
-    # normalize labels if its tanh so that it works
-    if model_type == "non-linear" and act_name == "tanh":
-        y_train_fit = 2 * y_train - 1  # [-1, 1] to match tanh range
-        y_test_fit  = 2 * y_test  - 1
-    else:
-        y_train_fit = y_train
-        y_test_fit  = y_test
-
     t0 = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
-        # Pass validation set so test_mse_history_ is populated each epoch.
-        perceptron.fit(X_train, y_train_fit, X_val=X_test, y_val=y_test_fit)
+        perceptron.fit(X_train, y_train, X_val=X_test, y_val=y_test)
     elapsed_seconds = time.perf_counter() - t0
 
     train_preds = perceptron.predict(X_train)
     test_preds  = perceptron.predict(X_test)
 
-    # NORMALIZATION FOR COMPARISONS
     if model_type == "non-linear" and act_name == "tanh":
         train_preds = (train_preds + 1) / 2
-        test_preds = (test_preds + 1) / 2
+        test_preds  = (test_preds  + 1) / 2
 
     # Clip all outputs to [0,1] so threshold has identical meaning across model types
     train_preds = _to_probability(train_preds)
