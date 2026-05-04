@@ -621,7 +621,11 @@ def plot_q2b_split(summary: pd.DataFrame) -> None:
             ax.set_ylabel(ylabel)
             ax.set_title(ylabel, fontsize=10)
             ax.legend(fontsize=8)
-            ax.set_xlim(8, 32)
+            tp_vals = split["test_per"].dropna().unique()
+            if len(tp_vals) > 1:
+                lo, hi = float(tp_vals.min() * 100), float(tp_vals.max() * 100)
+                pad = max(1.0, (hi - lo) * 0.08)
+                ax.set_xlim(lo - pad, hi + pad)
 
         fig.suptitle(
             "Q2b  \u2014  \u00bfC\u00f3mo afecta el tama\u00f1o del conjunto de entrenamiento a la generalizaci\u00f3n?\n"
@@ -687,7 +691,11 @@ def plot_q2b_overfitting(summary: pd.DataFrame) -> None:
         ax.set_xlabel("Tama\u00f1o del conjunto de test  (%)")
         ax.set_ylabel("MSE  (media sobre semillas)")
         ax.legend(fontsize=8)
-        ax.set_xlim(8, 32)
+        tp_vals_ov = split["test_per"].dropna().unique()
+        if len(tp_vals_ov) > 1:
+            lo, hi = float(tp_vals_ov.min() * 100), float(tp_vals_ov.max() * 100)
+            pad = max(1.0, (hi - lo) * 0.08)
+            ax.set_xlim(lo - pad, hi + pad)
 
         fig.suptitle(
             "Q2b  \u2014  Diagn\u00f3stico de overfitting: MSE de entrenamiento vs test\n"
@@ -1025,6 +1033,422 @@ def plot_q2c_confusion(summary: pd.DataFrame) -> None:
 
 
 # =============================================================================
+# Q2 — Tanh vs Logística (mejores LR fijos): métricas, generalización, ROC, umbral
+# =============================================================================
+
+def _lr_match(series: pd.Series, lr: float) -> pd.Series:
+    return np.isclose(series.astype(float), float(lr), rtol=0, atol=1e-11)
+
+
+def _split_nl_tanh_logistic(
+    summary: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> pd.DataFrame:
+    """Filas non-linear con (tanh, tanh_lr) o (logistic, logistic_lr)."""
+    d = summary[(summary["no_split"] == False) & (summary["model_type"] == "non-linear")].copy()
+    act = d["activation"].astype(str).str.lower().str.strip()
+    m_tanh = (act == "tanh") & _lr_match(d["lr"], tanh_lr)
+    m_log = (act == "logistic") & _lr_match(d["lr"], logistic_lr)
+    out = d[m_tanh | m_log]
+    return out
+
+
+def _roc_nl_tanh_logistic(
+    roc_df: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> pd.DataFrame:
+    d = roc_df[(roc_df["no_split"] == False) & (roc_df["model_type"] == "non-linear")].copy()
+    act = d["activation"].astype(str).str.lower().str.strip()
+    m_tanh = (act == "tanh") & _lr_match(d["lr"], tanh_lr)
+    m_log = (act == "logistic") & _lr_match(d["lr"], logistic_lr)
+    return d[m_tanh | m_log]
+
+
+def plot_q2a_tanh_logistic(
+    summary: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> None:
+    print("Q2a — Tanh vs Logística (métricas, LR fijos) ...")
+    split = summary[summary["no_split"] == False]
+    twin = _split_nl_tanh_logistic(summary, tanh_lr, logistic_lr)
+    if twin.empty:
+        print("  aviso: sin filas Tanh/Logística con los LR dados; se omite q2a_tanh_vs_logistica.")
+        return
+
+    acts_order = ("tanh", "logistic")
+    lrs_map = {"tanh": tanh_lr, "logistic": logistic_lr}
+    pos = list(range(1, len(acts_order) + 1))
+    colors_b = [COLORS_ACT[a] for a in acts_order]
+    edges_b = [PAIRWISE_COLORS[1]["box_edge"], PAIRWISE_COLORS[0]["box_edge"]]
+
+    with plt.rc_context(PLOT_RC):
+        fig, axes = plt.subplots(1, 3, figsize=(FIG_SIZE[0] * 1.1, FIG_SIZE[1]))
+
+        ax = axes[0]
+        fr = split["fraud_rate_test"].dropna()
+        ax.hist(fr, bins=20, color=COLOR_NONLINEAR, edgecolor="white", alpha=0.85)
+        ax.axvline(fr.mean(), color=BOXPLOT_STYLE["median_color"],
+                   linestyle="--", linewidth=1.8,
+                   label=f"Media = {fr.mean():.1%}")
+        ax.set_xlabel("Tasa de fraude en test")
+        ax.set_ylabel("Cantidad de corridas")
+        ax.set_title("Desbalance de clases\n(~11% fraude -> accuracy engaña)")
+        ax.legend(fontsize=8)
+
+        fr_best = twin["fraud_rate_test"].dropna()
+        baseline = 1 - (fr_best.mean() if not fr_best.empty else fr.mean())
+
+        def _act_tick_label(act: str) -> str:
+            sub = twin[
+                (twin["activation"].astype(str).str.lower() == act)
+                & _lr_match(twin["lr"], lrs_map[act])
+            ]
+            n = len(sub)
+            return f"{LABEL_ACT[act]}\nlr={lrs_map[act]:g}\nn={n}"
+
+        for ax, (metric, ylabel, ylim) in zip(axes[1:], [
+            ("test_acc", "Accuracy (tolerancia 0.5)", (0.8, 1.02)),
+            ("roc_auc",  "ROC-AUC (test)",            (0.8, 1.02)),
+        ]):
+            data = []
+            for act in acts_order:
+                sub = twin[
+                    (twin["activation"].astype(str).str.lower() == act)
+                    & _lr_match(twin["lr"], lrs_map[act])
+                ]
+                data.append(sub[metric].dropna().tolist())
+            _boxplot(ax, data, pos, colors_b, edges_b)
+            ax.set_xticks(pos)
+            ax.set_xticklabels([_act_tick_label(a) for a in acts_order], fontsize=8)
+            ax.set_ylabel(ylabel)
+            ax.set_title(ylabel, fontsize=10)
+            ax.set_ylim(*ylim)
+            if "acc" in metric:
+                ax.axhline(baseline, color=STYLE["grid"], linestyle="--",
+                           linewidth=1.2,
+                           label=f"Baseline trivial: {baseline:.1%}")
+                ax.legend(fontsize=7)
+
+        fig.suptitle(
+            "Q2a  —  Métricas (Tanh vs Logística, mejores LR)\n"
+            "ROC-AUC vs accuracy con desbalance de clases",
+            fontsize=10,
+        )
+        _apply_style(fig, *axes)
+        fig.tight_layout()
+        _save(fig, "q2a_tanh_vs_logistica_metricas.png")
+
+
+def plot_q2b_split_tanh_logistic(
+    summary: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> None:
+    print("Q2b — generalización vs split (Tanh vs Logística) ...")
+    split = _split_nl_tanh_logistic(summary, tanh_lr, logistic_lr)
+    split = split[split["test_per"].notna()]
+    if split.empty:
+        print("  aviso: sin datos con test_per definido; se omite q2b_generalizacion_vs_split_tanh_logistica.")
+        return
+
+    models = [
+        ("tanh", tanh_lr, COLORS_ACT["tanh"]),
+        ("logistic", logistic_lr, COLORS_ACT["logistic"]),
+    ]
+    metrics = [("roc_auc", "ROC-AUC (test)"), ("best_f1", "F1 óptimo (test)")]
+
+    tp_u = np.array(sorted(split["test_per"].unique()), dtype=float)
+    x_lo, x_hi = float((tp_u * 100).min()), float((tp_u * 100).max())
+    pad = max(1.0, (x_hi - x_lo) * 0.08)
+
+    with plt.rc_context(PLOT_RC):
+        fig, axes = plt.subplots(1, 2, figsize=FIG_SIZE)
+
+        for ax, (metric, ylabel) in zip(axes, metrics):
+            for act, lr, color in models:
+                sub = split[
+                    (split["activation"].astype(str).str.lower() == act)
+                    & _lr_match(split["lr"], lr)
+                ]
+                if sub.empty:
+                    continue
+                g = sub.groupby("test_per")[metric]
+                mean = g.mean()
+                std = g.std()
+                xs = mean.index.to_numpy() * 100
+                n_s = sub["seed"].nunique()
+                ax.plot(xs, mean.values,
+                        color=color, marker="o", markersize=6, linewidth=2,
+                        label=f"{LABEL_ACT[act]}  lr={lr:g}, n={n_s}")
+                ax.fill_between(xs,
+                                mean.values - std.values,
+                                mean.values + std.values,
+                                color=color, alpha=0.12)
+
+            ax.set_xlabel("Tamaño del conjunto de test  (%)")
+            ax.set_ylabel(ylabel)
+            ax.set_title(ylabel, fontsize=10)
+            ax.legend(fontsize=8)
+            ax.set_xlim(x_lo - pad, x_hi + pad)
+
+        fig.suptitle(
+            "Q2b  —  Generalización vs tamaño del test (Tanh vs Logística, LR fijos)\n"
+            "Mayor test_per implica menos datos de entrenamiento",
+            fontsize=10,
+        )
+        _apply_style(fig, *axes)
+        fig.tight_layout()
+        _save(fig, "q2b_generalizacion_vs_split_tanh_logistica.png")
+
+
+def plot_q2b_overfitting_tanh_logistic(
+    summary: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> None:
+    print("Q2b — overfitting Tanh vs Logística ...")
+    split = _split_nl_tanh_logistic(summary, tanh_lr, logistic_lr)
+    split = split[split["test_per"].notna()]
+    if split.empty:
+        print("  aviso: sin datos con test_per; se omite q2b_overfitting_tanh_logistica.")
+        return
+
+    models = [
+        ("tanh", tanh_lr, COLORS_ACT["tanh"],
+         f"Tanh, lr={tanh_lr:g}"),
+        ("logistic", logistic_lr, COLORS_ACT["logistic"],
+         f"Logística, lr={logistic_lr:g}"),
+    ]
+
+    tp_u = np.array(sorted(split["test_per"].unique()), dtype=float)
+    x_lo, x_hi = float((tp_u * 100).min()), float((tp_u * 100).max())
+    pad = max(1.0, (x_hi - x_lo) * 0.08)
+
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=FIG_SIZE)
+
+        for act, lr, color, base_lbl in models:
+            sub = split[
+                (split["activation"].astype(str).str.lower() == act)
+                & _lr_match(split["lr"], lr)
+            ]
+            if sub.empty:
+                continue
+            n_s = sub["seed"].nunique()
+            g_train = sub.groupby("test_per")["final_train_mse"]
+            g_test = sub.groupby("test_per")["mse"]
+            xs = g_train.mean().index.to_numpy() * 100
+            m_tr = g_train.mean().values
+            m_te = g_test.mean().values
+            s_te = g_test.std().values
+
+            ax.plot(xs, m_tr, color=color, linestyle="--",
+                    linewidth=1.8, marker="^", markersize=5,
+                    label=f"{base_lbl}, n={n_s} (train)")
+            ax.plot(xs, m_te, color=color, linestyle="-",
+                    linewidth=2.2, marker="o", markersize=6,
+                    label=f"{base_lbl}, n={n_s} (test)")
+            ax.fill_between(xs, m_te - s_te, m_te + s_te,
+                            color=color, alpha=0.12)
+
+        ax.set_xlabel("Tamaño del conjunto de test  (%)")
+        ax.set_ylabel("MSE  (media sobre semillas)")
+        ax.legend(fontsize=8)
+        ax.set_xlim(x_lo - pad, x_hi + pad)
+
+        fig.suptitle(
+            "Q2b  —  MSE train vs test (Tanh vs Logística)\n"
+            "Discontinua = train  |  Continua = test",
+            fontsize=10,
+        )
+        _apply_style(fig, ax)
+        fig.tight_layout()
+        _save(fig, "q2b_overfitting_tanh_logistica.png")
+
+
+def plot_q2c_roc_tanh_logistic(
+    roc_df: pd.DataFrame,
+    summary: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> None:
+    print("Q2c — curva ROC Tanh vs Logística ...")
+    split = _split_nl_tanh_logistic(summary, tanh_lr, logistic_lr)
+    roc_f = _roc_nl_tanh_logistic(roc_df, tanh_lr, logistic_lr)
+    if split.empty or roc_f.empty:
+        print("  aviso: sin datos ROC/summary; se omite q2c_curva_roc_tanh_logistica.")
+        return
+
+    common_fpr = np.linspace(0, 1, 200)
+
+    def _mean_roc(act: str, lr: float):
+        sub = roc_f[
+            (roc_f["activation"].astype(str).str.lower() == act)
+            & _lr_match(roc_f["lr"], lr)
+        ]
+        curves = []
+        for _, grp in sub.groupby(["seed", "test_per"]):
+            g = grp.sort_values("fpr")
+            curves.append(
+                np.interp(common_fpr, g["fpr"].to_numpy(), g["tpr"].to_numpy())
+            )
+        if not curves:
+            return None, None
+        mat = np.array(curves)
+        return mat.mean(axis=0), mat.std(axis=0)
+
+    models = [
+        ("tanh", tanh_lr, COLORS_ACT["tanh"]),
+        ("logistic", logistic_lr, COLORS_ACT["logistic"]),
+    ]
+
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        ax.plot([0, 1], [0, 1], "k--", linewidth=1,
+                label="Clasificador aleatorio  (AUC = 0.5)")
+
+        for act, lr, color in models:
+            mean_c, std_c = _mean_roc(act, lr)
+            if mean_c is None:
+                continue
+            sub_s = split[
+                (split["activation"].astype(str).str.lower() == act)
+                & _lr_match(split["lr"], lr)
+            ]
+            auc_m = float(sub_s["roc_auc"].mean())
+            n_s = sub_s["seed"].nunique()
+            ax.plot(common_fpr, mean_c, color=color, linewidth=2.5,
+                    label=f"{LABEL_ACT[act]}  lr={lr:g}, n={n_s}  (AUC={auc_m:.4f})")
+            ax.fill_between(common_fpr, mean_c - std_c, mean_c + std_c,
+                            color=color, alpha=0.2)
+
+        ax.set_xlabel("Tasa de falsos positivos (FPR)")
+        ax.set_ylabel("Tasa de verdaderos positivos (TPR / Recall)")
+        ax.set_title(
+            "Q2c  —  ROC: Tanh vs Logística (promedio sobre semillas y particiones)",
+            fontsize=10,
+        )
+        ax.legend(fontsize=8, loc="lower right")
+        ax.set_xlim(-0.01, 1.01)
+        ax.set_ylim(-0.01, 1.01)
+        _apply_style(fig, ax)
+        fig.tight_layout()
+        _save(fig, "q2c_curva_roc_tanh_logistica.png")
+
+
+def plot_q2c_umbral_tanh_logistic(
+    summary: pd.DataFrame,
+    roc_df: pd.DataFrame,
+    tanh_lr: float,
+    logistic_lr: float,
+) -> None:
+    print("Q2c — umbral Tanh vs Logística ...")
+    split = _split_nl_tanh_logistic(summary, tanh_lr, logistic_lr)
+    roc_f = _roc_nl_tanh_logistic(roc_df, tanh_lr, logistic_lr)
+    split_t = split[split["test_per"].notna()]
+    if split.empty or roc_f.empty:
+        print("  aviso: sin datos; se omite q2c_umbral_tanh_logistica.")
+        return
+
+    common_thr = np.linspace(0, 1, 200)
+
+    def _curves_for(act: str, lr: float):
+        sub_roc = roc_f[
+            (roc_f["activation"].astype(str).str.lower() == act)
+            & _lr_match(roc_f["lr"], lr)
+            & (roc_f["no_split"] == False)
+        ]
+        prec_list, rec_list, f1_list = [], [], []
+        for _, grp in sub_roc.groupby(["seed", "test_per"]):
+            g = grp.sort_values("threshold")
+            p = np.interp(common_thr, g["threshold"].to_numpy(),
+                          g["precision"].to_numpy(), left=0.0, right=0.0)
+            r = np.interp(common_thr, g["threshold"].to_numpy(),
+                          g["recall"].to_numpy(), left=1.0, right=0.0)
+            denom = p + r
+            f1 = np.divide(
+                2 * p * r, denom,
+                out=np.zeros_like(denom, dtype=float),
+                where=denom > 0,
+            )
+            prec_list.append(p)
+            rec_list.append(r)
+            f1_list.append(f1)
+        if not prec_list:
+            return None, None, None, None
+        mp = np.array(prec_list).mean(axis=0)
+        mr = np.array(rec_list).mean(axis=0)
+        mf = np.array(f1_list).mean(axis=0)
+        best_thr = float(common_thr[int(np.argmax(mf))])
+        return mp, mr, mf, best_thr
+
+    models = [
+        ("tanh", tanh_lr, COLORS_ACT["tanh"]),
+        ("logistic", logistic_lr, COLORS_ACT["logistic"]),
+    ]
+
+    with plt.rc_context(PLOT_RC):
+        fig, axes = plt.subplots(2, 2, figsize=(FIG_SIZE[0] * 1.15, FIG_SIZE[1] * 1.25))
+
+        for col, (act, lr, color) in enumerate(models):
+            mp, mr, mf, best_thr = _curves_for(act, lr)
+            ax = axes[0, col]
+            if mp is not None:
+                ax.plot(common_thr, mp, color="#2980b9", linewidth=2, label="Precision")
+                ax.plot(common_thr, mr, color=BOXPLOT_STYLE["mean_color"],
+                        linewidth=2, label="Recall")
+                ax.plot(common_thr, mf,
+                        color=BOXPLOT_STYLE["median_color"], linewidth=2.5,
+                        label="F1")
+                ax.axvline(best_thr, color=STYLE["text_title"],
+                           linestyle="--", linewidth=1.8,
+                           label=f"Umbral max-F1 = {best_thr:.3f}")
+            ax.set_xlabel("Umbral de decisión")
+            ax.set_ylabel("Métrica (media sobre semillas y particiones)")
+            ax.set_title(f"{LABEL_ACT[act]}  (lr={lr:g})\nPrecision / Recall / F1 vs umbral")
+            ax.legend(fontsize=7)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1.05)
+
+            ax2 = axes[1, col]
+            best_runs = split_t[
+                (split_t["activation"].astype(str).str.lower() == act)
+                & _lr_match(split_t["lr"], lr)
+            ]
+            test_pers = sorted(best_runs["test_per"].dropna().unique())
+            if test_pers:
+                tp_positions = list(range(1, len(test_pers) + 1))
+                data_thr = [
+                    best_runs[best_runs["test_per"] == tp]["best_threshold"]
+                    .dropna().tolist()
+                    for tp in test_pers
+                ]
+                colors_f = [color] * len(test_pers)
+                colors_e = [PAIRWISE_COLORS[1]["box_edge"]] * len(test_pers)
+                _boxplot(ax2, data_thr, tp_positions, colors_f, colors_e)
+                ax2.set_xticks(tp_positions)
+                ax2.set_xticklabels([f"{tp * 100:.0f}%" for tp in test_pers], fontsize=9)
+                om = best_runs["best_threshold"].mean()
+                ax2.axhline(om, color=BOXPLOT_STYLE["median_color"], linestyle="--",
+                            linewidth=1.8, label=f"Media global = {om:.3f}")
+                ax2.legend(fontsize=7)
+            ax2.set_xlabel("Tamaño del conjunto de test")
+            ax2.set_ylabel("Umbral óptimo (max-F1)")
+            ax2.set_title("Estabilidad del umbral vs partición")
+
+        fig.suptitle(
+            "Q2c  —  Umbral de detección (Tanh vs Logística, LR fijos)",
+            fontsize=10,
+        )
+        _apply_style(fig, axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1])
+        fig.tight_layout()
+        _save(fig, "q2c_umbral_tanh_logistica.png")
+
+
+# =============================================================================
 # Entry point
 # =============================================================================
 
@@ -1036,6 +1460,20 @@ def _parse_args() -> argparse.Namespace:
         "--no-linear",
         action="store_true",
         help="Excluye corridas lineales de los gráficos (p. ej. si el runner se usó con --no-linear).",
+    )
+    p.add_argument(
+        "--q2-tanh-lr",
+        type=float,
+        default=3e-5,
+        metavar="LR",
+        help="LR del modelo Tanh para figuras Q2 Tanh vs Logística (default: 3e-5).",
+    )
+    p.add_argument(
+        "--q2-logistic-lr",
+        type=float,
+        default=1e-4,
+        metavar="LR",
+        help="LR de Logística para figuras Q2 Tanh vs Logística (default: 1e-4).",
     )
     return p.parse_args()
 
@@ -1069,6 +1507,12 @@ def main() -> None:
     plot_q2c_roc(roc_df, summary)
     plot_q2c_umbral(summary, roc_df)
     plot_q2c_confusion(summary)
+
+    plot_q2a_tanh_logistic(summary, args.q2_tanh_lr, args.q2_logistic_lr)
+    plot_q2b_split_tanh_logistic(summary, args.q2_tanh_lr, args.q2_logistic_lr)
+    plot_q2b_overfitting_tanh_logistic(summary, args.q2_tanh_lr, args.q2_logistic_lr)
+    plot_q2c_roc_tanh_logistic(roc_df, summary, args.q2_tanh_lr, args.q2_logistic_lr)
+    plot_q2c_umbral_tanh_logistic(summary, roc_df, args.q2_tanh_lr, args.q2_logistic_lr)
 
 
 if __name__ == "__main__":

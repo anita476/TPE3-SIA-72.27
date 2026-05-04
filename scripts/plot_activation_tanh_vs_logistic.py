@@ -1,12 +1,25 @@
+"""
+plot_activation_tanh_vs_logistic.py
+
+Compares Tanh vs Logistic activations across learning rates and produces:
+  1. tanh_vs_logistica_lr_sweep.png  — 3 key metrics vs LR (1x3 semilog)
+  2. tanh_vs_logistica_comparacion.png — head-to-head bar chart at best LRs
+
+Usage:
+    python scripts/plot_activation_tanh_vs_logistic.py \
+        [--config configs/lr_exploration_tanh_logistic.json]
+"""
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 
@@ -16,17 +29,23 @@ if str(ROOT) not in sys.path:
 
 from utils.style import FIG_DPI, FIG_SIZE, PLOT_RC, SAVE_PAD_INCHES, STYLE
 
-DEFAULT_SUMMARY = ROOT / "results" / "linear_vs_nonlinear_summary.csv"
-DEFAULT_OUTPUT = ROOT / "plots" / "ej1" / "comparacion_tanh_vs_logistica.png"
-DEFAULT_OUTPUT_MSE = ROOT / "plots" / "ej1" / "comparacion_tanh_vs_logistica_mse.png"
-DEFAULT_OUTPUT_FACTORES = ROOT / "plots" / "ej1" / "comparacion_tanh_vs_logistica_factores_roc.png"
+PLOTS = ROOT / "plots" / "ej1"
+RESULTS = ROOT / "results"
+DEFAULT_CONFIG = ROOT / "configs" / "lr_exploration_tanh_logistic.json"
+DEFAULT_SUMMARY = RESULTS / "linear_vs_nonlinear_summary.csv"
 
-COLORS_ACT = {
-    "logistic": "#8e44ad",
-    "tanh": "#27ae60",
-}
-LABEL_ACT = {"logistic": "Logística", "tanh": "Tanh"}
-ACTIVATION_ORDER = ("logistic", "tanh")
+COLORS_ACT = {"tanh": "#27ae60", "logistic": "#8e44ad"}
+LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logistica"}
+MARKERS    = {"tanh": "o", "logistic": "s"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _norm_act(s: str) -> str:
+    a = str(s).strip().lower()
+    return "logistic" if a in ("logistics", "sigmoid") else a
 
 
 def _apply_style(fig: plt.Figure, *axes: plt.Axes) -> None:
@@ -48,455 +67,417 @@ def _apply_style(fig: plt.Figure, *axes: plt.Axes) -> None:
         ax.yaxis.label.set_color(STYLE["text_axis"])
 
 
-def _normalize_activation(s: str) -> str:
-    a = str(s).strip().lower()
-    if a in ("logistics", "sigmoid"):
-        return "logistic"
-    return a
+def _save(fig: plt.Figure, name: str) -> None:
+    PLOTS.mkdir(parents=True, exist_ok=True)
+    out = PLOTS / name
+    fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight",
+                pad_inches=SAVE_PAD_INCHES, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"  Guardado: {out}")
 
 
-def _filter_test_per(df: pd.DataFrame, mode: str) -> pd.DataFrame:
-    m = mode.strip().lower()
-    if m == "all":
-        return df
-    if m in ("null", "none", "nan"):
-        return df[df["test_per"].isna()]
-    val = float(mode)
-    return df[np.isclose(df["test_per"].astype(float), val, rtol=0, atol=1e-9)]
+# ─────────────────────────────────────────────────────────────────────────────
+# Data loading & aggregation
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def _prepare_frame(summary: pd.DataFrame, test_per_mode: str) -> pd.DataFrame:
-    df = summary.copy()
-    if "model_type" not in df.columns or "activation" not in df.columns:
-        raise SystemExit("El CSV no tiene columnas model_type / activation.")
-
-    df["activation"] = df["activation"].map(_normalize_activation)
-    df = df[df["model_type"].astype(str) == "non-linear"]
-    df = df[df["activation"].isin(["tanh", "logistic"])]
-
-    if "no_split" not in df.columns:
-        raise SystemExit("Falta la columna no_split en el CSV.")
+def _load(summary_path: Path, test_per: float) -> pd.DataFrame:
+    df = pd.read_csv(summary_path)
+    df["activation"] = df["activation"].map(_norm_act)
     ns = df["no_split"].map(lambda x: str(x).strip().lower() in ("false", "0"))
-    df = df[ns.astype(bool)]
-
-    df = _filter_test_per(df, test_per_mode)
-
-    for col in ("lr", "seed", "roc_auc", "best_f1", "train_roc_auc", "final_train_mse"):
-        if col not in df.columns:
-            raise SystemExit(f"Falta la columna requerida: {col}")
-
+    df = df[
+        (df["model_type"].astype(str) == "non-linear") &
+        ns &
+        df["activation"].isin(["tanh", "logistic"]) &
+        np.isclose(df["test_per"].astype(float), test_per, rtol=0, atol=1e-9)
+    ].copy()
     return df
 
 
 def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
-    """Una fila por (activation, lr) con mean y std sobre todas las filas restantes."""
-    g = df.groupby(["activation", "lr"], sort=False)
-    agg_kw: dict = {
-        "roc_auc_mean": ("roc_auc", "mean"),
-        "roc_auc_std": ("roc_auc", "std"),
-        "best_f1_mean": ("best_f1", "mean"),
-        "best_f1_std": ("best_f1", "std"),
-        "train_roc_auc_mean": ("train_roc_auc", "mean"),
-        "train_roc_auc_std": ("train_roc_auc", "std"),
-        "final_train_mse_mean": ("final_train_mse", "mean"),
-        "final_train_mse_std": ("final_train_mse", "std"),
-    }
-    if "recall_at_threshold" in df.columns:
-        agg_kw["recall_at_threshold_mean"] = ("recall_at_threshold", "mean")
-        agg_kw["recall_at_threshold_std"] = ("recall_at_threshold", "std")
-    if "fpr_at_threshold" in df.columns:
-        agg_kw["fpr_at_threshold_mean"] = ("fpr_at_threshold", "mean")
-        agg_kw["fpr_at_threshold_std"] = ("fpr_at_threshold", "std")
-    out = g.agg(**agg_kw).reset_index()
-    for c in list(out.columns):
+    """One row per (activation, lr): mean+std over seeds for all key metrics."""
+    # Compute gen gap per row first
+    df = df.copy()
+    df["gen_gap"] = df["train_roc_auc"] - df["roc_auc"]
+
+    cols = [
+        "roc_auc", "best_f1", "best_recall", "best_precision",
+        "train_roc_auc", "final_train_mse", "gen_gap",
+        "recall_at_threshold", "precision_at_threshold",
+        "f1_at_threshold", "fpr_at_threshold",
+    ]
+    cols = [c for c in cols if c in df.columns]
+
+    agg_kw: dict = {}
+    for c in cols:
+        agg_kw[f"{c}_mean"] = (c, "mean")
+        agg_kw[f"{c}_std"]  = (c, "std")
+
+    out = df.groupby(["activation", "lr"], sort=False).agg(**agg_kw).reset_index()
+    for c in out.columns:
         if c.endswith("_std"):
             out[c] = out[c].fillna(0.0)
     return out
 
 
-def _curve_for_activation(agg: pd.DataFrame, act: str) -> pd.DataFrame:
-    sub = agg[agg["activation"] == act].sort_values("lr")
-    return sub
-
-
-def _best_lr_for_activation(
-    agg: pd.DataFrame,
-    activation: str,
-    mean_col: str,
-    *,
-    minimize: bool = False,
-) -> tuple[float, float] | None:
-    """Extremo de ``mean_col`` por activación: max (default) o min (``minimize=True``). Empates → menor LR."""
-    sub = agg[agg["activation"] == activation].dropna(subset=[mean_col])
+def _best_lr(agg: pd.DataFrame, act: str) -> float | None:
+    sub = agg[agg["activation"] == act].dropna(subset=["roc_auc_mean"])
     if sub.empty:
         return None
-    if minimize:
-        mx = float(sub[mean_col].min())
-        tied = sub[np.isclose(sub[mean_col], mx, rtol=1e-12, atol=1e-15)]
-    else:
-        mx = float(sub[mean_col].max())
-        tied = sub[np.isclose(sub[mean_col], mx, rtol=0, atol=1e-9)]
-    row = tied.sort_values("lr").iloc[0]
-    return float(row["lr"]), float(row[mean_col])
+    mx = sub["roc_auc_mean"].max()
+    tied = sub[np.isclose(sub["roc_auc_mean"], mx, atol=1e-9)]
+    return float(tied.sort_values("lr").iloc[0]["lr"])
 
 
-def _report_best_lrs_roc_test(agg: pd.DataFrame) -> str:
-    """Mejor LR por activación según ROC-AUC en test (solo consola)."""
-    lines: list[str] = ["--- Mejor LR por activación (ROC-AUC en test, media) ---"]
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure 1 — LR sweep (3 panels)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    for act in ("tanh", "logistic"):
-        got = _best_lr_for_activation(agg, act, "roc_auc_mean", minimize=False)
-        lab = LABEL_ACT[act]
-        if got is None:
-            lines.append(f"  {lab}: (sin datos)")
-            continue
-        lr_b, v = got
-        lines.append(f"  {lab}:  lr = {lr_b:g}    (AUC medio ~ {v:.6f})")
-
-    return "\n".join(lines).strip()
-
-
-def _report_best_lrs_final_train_mse(agg: pd.DataFrame) -> str:
-    """Mejor LR por activación según MSE final de entrenamiento (menor es mejor)."""
-    lines: list[str] = ["--- Mejor LR por activación (MSE final train, media; menor es mejor) ---"]
-
-    for act in ("tanh", "logistic"):
-        got = _best_lr_for_activation(agg, act, "final_train_mse_mean", minimize=True)
-        lab = LABEL_ACT[act]
-        if got is None:
-            lines.append(f"  {lab}: (sin datos)")
-            continue
-        lr_b, v = got
-        lines.append(f"  {lab}:  lr = {lr_b:g}    (MSE medio ~ {v:.6f})")
-
-    return "\n".join(lines).strip()
-
-
-def _plot_panel(
+def _plot_sweep_panel(
     ax: plt.Axes,
     agg: pd.DataFrame,
     mean_col: str,
     std_col: str,
     ylabel: str,
     title: str,
-    log_y: bool,
+    best_lrs: dict[str, float | None],
     *,
-    show_xlabel: bool = True,
+    log_y: bool = False,
+    minimize: bool = False,
 ) -> None:
-    for act in ACTIVATION_ORDER:
-        sub = _curve_for_activation(agg, act)
-        if sub.empty:
+    present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
+
+    for act in present:
+        sub = agg[agg["activation"] == act].sort_values("lr")
+        if sub.empty or mean_col not in sub.columns:
             continue
-        xs = sub["lr"].to_numpy(dtype=float)
-        m = sub[mean_col].to_numpy(dtype=float)
-        s = sub[std_col].to_numpy(dtype=float)
+        xs = sub["lr"].to_numpy(float)
+        m  = sub[mean_col].to_numpy(float)
+        s  = sub[std_col].to_numpy(float) if std_col in sub.columns else np.zeros_like(m)
         color = COLORS_ACT[act]
-        label = LABEL_ACT[act]
-        ax.semilogx(xs, m, color=color, marker="o", markersize=5, linewidth=2, label=label)
-        lo = np.clip(m - s, 1e-8 if log_y else -np.inf, None)
-        hi = m + s
-        if log_y:
-            lo = np.maximum(lo, 1e-8)
-        ax.fill_between(xs, lo, hi, color=color, alpha=0.18, linewidth=0)
-    if show_xlabel:
-        ax.set_xlabel("Learning rate (escala log)")
+
+        ax.semilogx(xs, m, color=color, marker=MARKERS[act],
+                    markersize=5, linewidth=2, label=LABEL_ACT[act])
+        lo = np.maximum(m - s, 1e-9) if log_y else np.maximum(m - s, 0.0)
+        ax.fill_between(xs, lo, m + s, color=color, alpha=0.18, linewidth=0)
+
+        # Star at metric optimum
+        best_val = m.min() if minimize else m.max()
+        best_idx = int(np.argmin(m) if minimize else np.argmax(m))
+        ax.scatter([xs[best_idx]], [best_val], s=180, marker="*",
+                   color=color, edgecolors="#2c3e50", linewidths=0.8, zorder=8)
+
+    # Vertical reference lines at best-AUC LR
+    for act in present:
+        lr_best = best_lrs.get(act)
+        if lr_best is not None:
+            ax.axvline(lr_best, color=COLORS_ACT[act], linestyle="--",
+                       linewidth=1.2, alpha=0.7)
+
+    ax.set_xlabel("Learning rate")
     ax.set_ylabel(ylabel)
     ax.set_title(title, fontsize=11)
     if log_y:
         ax.set_yscale("log")
 
 
-def _mark_optima_on_panel(
-    ax: plt.Axes,
-    agg: pd.DataFrame,
-    mean_col: str,
-    *,
-    minimize: bool,
-) -> None:
-    """Marca con estrella y etiqueta el mejor LR de cada activación para la métrica de ese panel."""
-    offsets = {
-        "logistic": (12, 14),
-        "tanh":     (12, -22),
-    }
-    for act in ACTIVATION_ORDER:
-        got = _best_lr_for_activation(agg, act, mean_col, minimize=minimize)
-        if got is None:
-            continue
-        lr_b, y_b = got
-        color = COLORS_ACT[act]
-        ax.scatter(
-            [lr_b],
-            [y_b],
-            s=200,
-            marker="*",
-            c=color,
-            edgecolors="#2c3e50",
-            linewidths=0.9,
-            zorder=8,
-        )
-        ox, oy = offsets[act]
-        ax.annotate(
-            f"{LABEL_ACT[act]}\nlr={lr_b:g}",
-            xy=(lr_b, y_b),
-            xytext=(ox, oy),
-            textcoords="offset points",
-            fontsize=7,
-            fontweight="bold",
-            color=color,
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.92),
-            zorder=9,
-        )
-
-
-def _plot_factores_roc_figure(
-    agg: pd.DataFrame,
-    df: pd.DataFrame,
-    out_path: Path,
-    threshold_val: float | None,
-) -> None:
-    """2×2: AUC test, AUC train, recall y FPR en test (umbral fijo del experimento)."""
-    need = ("recall_at_threshold_mean", "fpr_at_threshold_mean")
-    if not all(c in agg.columns for c in need):
-        return
-
-    thr_txt = f"{threshold_val:g}" if threshold_val is not None else "config"
+def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: int) -> None:
+    panels = [
+        ("roc_auc_mean",  "roc_auc_std",  "ROC-AUC (test)",          "ROC-AUC en test",             False, False),
+        ("best_f1_mean",  "best_f1_std",  "F1 optimo (test)",         "F1 optimo en test",            False, False),
+        ("gen_gap_mean",  "gen_gap_std",  "Brecha de generalizacion", "Brecha (AUC train - AUC test)", False, True),
+    ]
 
     with plt.rc_context(PLOT_RC):
-        fig, axes = plt.subplots(2, 2, figsize=(FIG_SIZE[0] * 1.05, FIG_SIZE[1] * 1.15))
-        ax00, ax01 = axes[0]
-        ax10, ax11 = axes[1]
+        fig, axes = plt.subplots(1, 3, figsize=(FIG_SIZE[0] * 1.2, FIG_SIZE[1] * 0.82))
 
-        _plot_panel(
-            ax00, agg, "roc_auc_mean", "roc_auc_std",
-            "ROC-AUC (test)",
-            "ROC-AUC en test",
-            log_y=False,
+        for ax, (mc, sc, ylabel, title, log_y, minimize) in zip(axes, panels):
+            _plot_sweep_panel(ax, agg, mc, sc, ylabel, title, best_lrs,
+                              log_y=log_y, minimize=minimize)
+            ax.legend(fontsize=8, loc="best")
+
+        # Add y=0 reference line to gen gap panel
+        axes[2].axhline(0, color="#7f8c8d", linestyle=":", linewidth=1.2,
+                        label="Sin sobreajuste")
+        axes[2].legend(fontsize=8, loc="best")
+
+        # Shared best-LR legend entries
+        present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
+        extra_handles = [
+            plt.Line2D([0], [0], color=COLORS_ACT[a], linestyle="--", linewidth=1.2,
+                       label=f"Mejor LR {LABEL_ACT[a]} = {best_lrs[a]:g}")
+            for a in present if best_lrs.get(a) is not None
+        ] + [plt.Line2D([0], [0], marker="*", color="gray", linestyle="None",
+                        markersize=9, label="Optimo del panel")]
+        fig.legend(handles=extra_handles, loc="lower center", ncol=len(extra_handles),
+                   fontsize=8.5, frameon=True, bbox_to_anchor=(0.5, -0.04))
+
+        fig.suptitle(
+            f"Tanh vs Logistica -- Exploracion de learning rate  |  banda = +-1 std ({n_seeds} semillas)",
+            fontsize=10,
         )
-        _mark_optima_on_panel(ax00, agg, "roc_auc_mean", minimize=False)
-
-        _plot_panel(
-            ax01, agg, "train_roc_auc_mean", "train_roc_auc_std",
-            "ROC-AUC (train)",
-            "ROC-AUC en entrenamiento",
-            log_y=False,
-        )
-        _mark_optima_on_panel(ax01, agg, "train_roc_auc_mean", minimize=False)
-
-        _plot_panel(
-            ax10, agg, "recall_at_threshold_mean", "recall_at_threshold_std",
-            "Recall / TPR (test)",
-            f"Recall en test  (umbral = {thr_txt})",
-            log_y=False,
-        )
-        _mark_optima_on_panel(ax10, agg, "recall_at_threshold_mean", minimize=False)
-
-        _plot_panel(
-            ax11, agg, "fpr_at_threshold_mean", "fpr_at_threshold_std",
-            "FPR (test)",
-            f"Tasa de falsos positivos en test  (umbral = {thr_txt})",
-            log_y=False,
-        )
-        _mark_optima_on_panel(ax11, agg, "fpr_at_threshold_mean", minimize=True)
-
-        for ax in (ax00, ax01, ax10, ax11):
-            ax.legend(fontsize=9, loc="best")
-            ax.set_xlim(left=df["lr"].min() * 0.85, right=df["lr"].max() * 1.15)
-
-        _apply_style(fig, ax00, ax01, ax10, ax11)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.99])
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(
-            out_path,
-            dpi=FIG_DPI,
-            bbox_inches="tight",
-            pad_inches=SAVE_PAD_INCHES,
-            facecolor=fig.get_facecolor(),
-        )
-        plt.close(fig)
-        print(f"Guardado (factores ROC): {out_path}")
+        _apply_style(fig, *axes)
+        fig.tight_layout(rect=[0, 0.06, 1, 0.96])
+        _save(fig, "tanh_vs_logistica_lr_sweep.png")
 
 
-def _print_factores_best_lrs(agg: pd.DataFrame) -> None:
-    if "recall_at_threshold_mean" not in agg.columns:
-        return
-    print("--- Mejor LR (factores ROC / umbral fijo) ---")
-    for title, col, minimize in (
-        ("ROC-AUC test", "roc_auc_mean", False),
-        ("ROC-AUC train", "train_roc_auc_mean", False),
-        ("Recall test @ umbral", "recall_at_threshold_mean", False),
-        ("FPR test @ umbral (menor es mejor)", "fpr_at_threshold_mean", True),
-    ):
-        print(f"  [{title}]")
-        for act in ("tanh", "logistic"):
-            got = _best_lr_for_activation(agg, act, col, minimize=minimize)
-            lab = LABEL_ACT[act]
-            if got is None:
-                print(f"    {lab}: —")
+# ─────────────────────────────────────────────────────────────────────────────
+# Figure 2 — Head-to-head comparison at best LRs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_comparacion(
+    agg: pd.DataFrame,
+    best_lrs: dict[str, float | None],
+) -> None:
+    present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
+
+    # Metrics to compare (label, mean_col, std_col, higher_is_better)
+    metric_defs = [
+        ("ROC-AUC (test)",       "roc_auc_mean",              "roc_auc_std",              True),
+        ("F1 optimo",            "best_f1_mean",              "best_f1_std",              True),
+        ("Recall optimo",        "best_recall_mean",          "best_recall_std",          True),
+        ("Precision optima",     "best_precision_mean",       "best_precision_std",       True),
+        ("Recall @ umbral",      "recall_at_threshold_mean",  "recall_at_threshold_std",  True),
+        ("Precision @ umbral",   "precision_at_threshold_mean","precision_at_threshold_std",True),
+        ("F1 @ umbral",          "f1_at_threshold_mean",      "f1_at_threshold_std",      True),
+        ("Especificidad (1-FPR)","fpr_at_threshold_mean",     "fpr_at_threshold_std",     True),
+    ]
+    # keep only metrics present in agg
+    metric_defs = [(lbl, mc, sc, hib) for lbl, mc, sc, hib in metric_defs if mc in agg.columns]
+
+    n_metrics = len(metric_defs)
+    bar_h = 0.32
+    gap   = 0.1
+    n_acts = len(present)
+
+    # Extract values per activation at its best LR
+    vals: dict[str, dict[str, tuple[float, float]]] = {}  # act -> label -> (mean, std)
+    for act in present:
+        lr = best_lrs.get(act)
+        if lr is None:
+            continue
+        row = agg[(agg["activation"] == act) & np.isclose(agg["lr"].astype(float), lr, atol=1e-11)]
+        if row.empty:
+            continue
+        vals[act] = {}
+        for lbl, mc, sc, hib in metric_defs:
+            m_val = float(row[mc].iloc[0]) if mc in row.columns else 0.0
+            s_val = float(row[sc].iloc[0]) if sc in row.columns else 0.0
+            # Invert FPR -> Especificidad
+            if "fpr" in mc:
+                m_val = 1.0 - m_val
+            vals[act][lbl] = (m_val, s_val)
+
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.92, FIG_SIZE[1] * 1.05))
+
+        y_centers = np.arange(n_metrics, dtype=float)
+
+        for ai, act in enumerate(present):
+            if act not in vals:
+                continue
+            color = COLORS_ACT[act]
+            offset = (ai - (n_acts - 1) / 2) * (bar_h + gap / 2)
+            for mi, (lbl, mc, sc, hib) in enumerate(metric_defs):
+                m_val, s_val = vals[act].get(lbl, (0.0, 0.0))
+                y = y_centers[mi] + offset
+                ax.barh(y, m_val, height=bar_h, color=color, alpha=0.75,
+                        edgecolor=color, linewidth=0.8, xerr=s_val,
+                        error_kw=dict(ecolor="#2c3e50", capsize=3, linewidth=1.2))
+                # value label
+                ax.text(min(m_val + s_val + 0.012, 0.97), y, f"{m_val:.3f}",
+                        va="center", ha="left", fontsize=7.5,
+                        color=STYLE["text_title"], fontweight="bold")
+
+        # Mark winner per metric
+        for mi, (lbl, mc, sc, hib) in enumerate(metric_defs):
+            act_vals = {a: vals[a].get(lbl, (0.0, 0.0))[0] for a in present if a in vals}
+            if len(act_vals) < 2:
+                continue
+            winner = max(act_vals, key=act_vals.get)
+            loser_val = min(act_vals.values())
+            # only mark if gap is meaningful
+            if act_vals[winner] - loser_val > 1e-4:
+                ai = present.index(winner)
+                offset = (ai - (n_acts - 1) / 2) * (bar_h + gap / 2)
+                ax.scatter([-0.015], [y_centers[mi] + offset],
+                           s=60, marker="D", color=COLORS_ACT[winner],
+                           zorder=9, clip_on=False)
+
+        ax.set_yticks(y_centers)
+        ax.set_yticklabels([m[0] for m in metric_defs], fontsize=9)
+        ax.set_xlabel("Valor (0-1)")
+        ax.set_xlim(0, 1.05)
+        ax.invert_yaxis()
+
+        # Winner annotation box
+        if len(present) == 2 and all(a in vals for a in present):
+            a0, a1 = present
+            auc0 = vals[a0].get("ROC-AUC (test)", (0, 0))[0]
+            auc1 = vals[a1].get("ROC-AUC (test)", (0, 0))[0]
+            winner_act = a0 if auc0 >= auc1 else a1
+            winner_lr  = best_lrs[winner_act]
+            winner_auc = max(auc0, auc1)
+            ax.text(0.98, 0.02,
+                    f"Mejor modelo:\n{LABEL_ACT[winner_act]} (lr={winner_lr:g})\nAUC = {winner_auc:.4f}",
+                    transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5,
+                    fontweight="bold", color=COLORS_ACT[winner_act],
+                    bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                              edgecolor=COLORS_ACT[winner_act], alpha=0.92))
+
+        lr_strs = [f"{LABEL_ACT[a]} lr={best_lrs[a]:g}" for a in present if best_lrs.get(a)]
+        title_str = "Comparacion directa -- " + " vs ".join(lr_strs)
+        ax.set_title(title_str, fontsize=10)
+
+        legend_handles = [
+            mpatches.Patch(facecolor=COLORS_ACT[a], alpha=0.8, label=LABEL_ACT[a])
+            for a in present
+        ] + [plt.Line2D([0], [0], marker="D", color="gray", linestyle="None",
+                        markersize=6, label="Ganador (diferencia > 0.0001)")]
+        ax.legend(handles=legend_handles, fontsize=8.5, loc="lower right")
+
+        _apply_style(fig, ax)
+        # suppress minor y-grid (it's a horizontal bar chart)
+        ax.grid(axis="y", which="both", visible=False)
+        ax.grid(axis="x", which="major", linestyle="-", linewidth=0.6,
+                alpha=0.4, color=STYLE["grid"], zorder=0)
+        fig.tight_layout()
+        _save(fig, "tanh_vs_logistica_comparacion.png")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Console summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None]) -> None:
+    present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
+
+    print("\n--- Mejor LR por activacion (criterio: ROC-AUC test) ---")
+    for act in present:
+        lr = best_lrs.get(act)
+        if lr is None:
+            continue
+        row = agg[(agg["activation"] == act) & np.isclose(agg["lr"].astype(float), lr, atol=1e-11)]
+        if row.empty:
+            continue
+        m = float(row["roc_auc_mean"].iloc[0])
+        s = float(row["roc_auc_std"].iloc[0])
+        print(f"  {LABEL_ACT[act]:12s}: lr = {lr:g}   (AUC = {m:.4f} +- {s:.4f})")
+
+    print("\n--- Comparacion directa al mejor LR ---")
+    metric_defs = [
+        ("ROC-AUC (test)",   "roc_auc_mean",              "roc_auc_std",              True),
+        ("F1 optimo",        "best_f1_mean",              "best_f1_std",              True),
+        ("Recall optimo",    "best_recall_mean",          "best_recall_std",          True),
+        ("Precision optima", "best_precision_mean",       "best_precision_std",       True),
+        ("Recall@umbral",    "recall_at_threshold_mean",  "recall_at_threshold_std",  True),
+        ("FPR@umbral",       "fpr_at_threshold_mean",     "fpr_at_threshold_std",     False),
+    ]
+    metric_defs = [(l, mc, sc, h) for l, mc, sc, h in metric_defs if mc in agg.columns]
+
+    header = f"  {'Metrica':<20}" + "".join(f"  {LABEL_ACT[a]:<22}" for a in present) + "  Ganador"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    winner_counts: dict[str, int] = {a: 0 for a in present}
+    for lbl, mc, sc, higher_is_better in metric_defs:
+        row_vals: dict[str, tuple[float, float]] = {}
+        for act in present:
+            lr = best_lrs.get(act)
+            if lr is None:
+                continue
+            row = agg[(agg["activation"] == act) & np.isclose(agg["lr"].astype(float), lr, atol=1e-11)]
+            if row.empty or mc not in row.columns:
+                continue
+            row_vals[act] = (float(row[mc].iloc[0]), float(row[sc].iloc[0]))
+
+        if len(row_vals) < 1:
+            continue
+
+        line = f"  {lbl:<20}"
+        for act in present:
+            if act in row_vals:
+                m, s = row_vals[act]
+                line += f"  {m:.4f} +- {s:.4f}    "
             else:
-                lr_b, v = got
-                print(f"    {lab}: lr = {lr_b:g}  (media ~ {v:.6f})")
-    print()
+                line += "  -                    "
 
+        if len(row_vals) == 2:
+            a0, a1 = present
+            m0, m1 = row_vals[a0][0], row_vals[a1][0]
+            if higher_is_better:
+                winner = a0 if m0 > m1 else (a1 if m1 > m0 else "Empate")
+            else:
+                winner = a0 if m0 < m1 else (a1 if m1 < m0 else "Empate")
+            line += LABEL_ACT.get(winner, winner)
+            if winner in winner_counts:
+                winner_counts[winner] += 1
+        print(line)
+
+    if len(present) == 2:
+        overall = max(winner_counts, key=winner_counts.get)
+        lr_best = best_lrs.get(overall)
+        print(f"\n  Veredicto: {LABEL_ACT[overall]} (lr={lr_best:g}) gana en {winner_counts[overall]}/{len(metric_defs)} metricas")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI + main
+# ─────────────────────────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=(
-            "Figuras Tanh vs Logística: ROC-AUC en test (PNG principal), "
-            "MSE final train en otro PNG con escala lineal, y opcionalmente factores ROC."
-        )
-    )
-    p.add_argument(
-        "--summary",
-        type=Path,
-        default=DEFAULT_SUMMARY,
-        help=f"CSV de resumen (default: {DEFAULT_SUMMARY})",
-    )
-    p.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"PNG de ROC-AUC en test (default: {DEFAULT_OUTPUT})",
-    )
-    p.add_argument(
-        "--output-mse",
-        type=Path,
-        dest="output_mse",
-        default=DEFAULT_OUTPUT_MSE,
-        help=f"PNG de MSE final train, escala lineal (default: {DEFAULT_OUTPUT_MSE})",
-    )
-    p.add_argument(
-        "--test-per",
-        type=str,
-        default="0.2",
-        metavar="VAL",
-        help='Partición test: "0.2", "null" (dataset completo en CSV), o "all" (promediar todos los test_per).',
-    )
-    p.add_argument(
-        "--output-factores",
-        type=Path,
-        default=DEFAULT_OUTPUT_FACTORES,
-        help=(
-            "Segunda figura: AUC test + AUC train + recall + FPR @ umbral "
-            f"(default: {DEFAULT_OUTPUT_FACTORES})."
-        ),
-    )
-    p.add_argument(
-        "--skip-factores",
-        action="store_true",
-        help="No generar la figura de factores ROC (aunque el CSV tenga las columnas).",
-    )
+    p = argparse.ArgumentParser(description="Tanh vs Logistica -- LR sweep + comparacion final")
+    p.add_argument("--config",  type=Path, default=DEFAULT_CONFIG,
+                   help=f"Config JSON (default: {DEFAULT_CONFIG.name})")
+    p.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY,
+                   help=f"Summary CSV (default: {DEFAULT_SUMMARY.name})")
     return p.parse_args()
+
+
+def _test_per_from_config(cfg: dict) -> float:
+    vals = [v for v in cfg.get("grid", {}).get("test_per", []) if v is not None]
+    return float(vals[0]) if vals else 0.20
+
+
+def _threshold_from_config(cfg: dict) -> float:
+    return float(cfg.get("base", {}).get("threshold", 0.5))
 
 
 def main() -> None:
     args = parse_args()
+    cfg_path = args.config.resolve()
+    if not cfg_path.is_file():
+        raise SystemExit(f"Config no encontrado: {cfg_path}")
+    cfg = json.loads(cfg_path.read_text())
+
+    test_per = _test_per_from_config(cfg)
+    thr      = _threshold_from_config(cfg)
     summary_path = args.summary.resolve()
     if not summary_path.is_file():
-        raise SystemExit(f"No se encontró el summary: {summary_path}")
+        raise SystemExit(f"Summary no encontrado: {summary_path}")
 
-    summary = pd.read_csv(summary_path)
-    df = _prepare_frame(summary, args.test_per)
+    print(f"Config: {cfg_path.name}  |  test_per={test_per}  |  umbral={thr}")
 
+    df = _load(summary_path, test_per)
     if df.empty:
-        raise SystemExit(
-            "No quedaron filas tras filtrar (non-linear, tanh/logistic, no_split=False, test_per)."
-        )
+        raise SystemExit("Sin datos tras filtrar. Corre el experiment_runner primero.")
 
-    present = set(df["activation"].unique())
-    for need in ("tanh", "logistic"):
-        if need not in present:
-            raise SystemExit(
-                f"Falta la activación {need!r} en los datos filtrados. Presentes: {sorted(present)}"
-            )
-
-    if df["lr"].nunique() == 0:
-        raise SystemExit("No hay valores de lr en el subconjunto filtrado.")
+    present = sorted(df["activation"].unique())
+    n_seeds = df["seed"].nunique()
+    print(f"Activaciones: {present}  |  LRs por activacion: {df.groupby('activation')['lr'].nunique().to_dict()}  |  Semillas: {n_seeds}")
 
     agg = _aggregate(df)
+    best_lrs: dict[str, float | None] = {
+        "tanh":    _best_lr(agg, "tanh"),
+        "logistic": _best_lr(agg, "logistic"),
+    }
 
-    print(_report_best_lrs_roc_test(agg))
-    print()
-    print(_report_best_lrs_final_train_mse(agg))
-    print()
+    print("\n[Fig 1] LR sweep...")
+    plot_lr_sweep(agg, best_lrs, n_seeds)
 
-    lr_xlim = (df["lr"].min() * 0.85, df["lr"].max() * 1.15)
+    print("[Fig 2] Comparacion final...")
+    plot_comparacion(agg, best_lrs)
 
-    with plt.rc_context(PLOT_RC):
-        fig, ax = plt.subplots(1, 1, figsize=(FIG_SIZE[0], FIG_SIZE[1] * 0.82))
-
-        _plot_panel(
-            ax, agg, "roc_auc_mean", "roc_auc_std",
-            "ROC-AUC (test)",
-            "ROC-AUC en test",
-            log_y=False,
-        )
-        _mark_optima_on_panel(ax, agg, "roc_auc_mean", minimize=False)
-
-        ax.legend(fontsize=10, loc="best")
-        ax.set_xlim(left=lr_xlim[0], right=lr_xlim[1])
-
-        _apply_style(fig, ax)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.99])
-
-        out = args.output.resolve()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(
-            out,
-            dpi=FIG_DPI,
-            bbox_inches="tight",
-            pad_inches=SAVE_PAD_INCHES,
-            facecolor=fig.get_facecolor(),
-        )
-        plt.close(fig)
-        print(f"Guardado (ROC-AUC): {out}")
-
-    with plt.rc_context(PLOT_RC):
-        fig_m, ax_m = plt.subplots(1, 1, figsize=(FIG_SIZE[0], FIG_SIZE[1] * 0.82))
-
-        _plot_panel(
-            ax_m, agg, "final_train_mse_mean", "final_train_mse_std",
-            "MSE final (train)",
-            "MSE final de entrenamiento",
-            log_y=False,
-        )
-        _mark_optima_on_panel(ax_m, agg, "final_train_mse_mean", minimize=True)
-
-        ax_m.legend(fontsize=10, loc="best")
-        ax_m.set_xlim(left=lr_xlim[0], right=lr_xlim[1])
-
-        _apply_style(fig_m, ax_m)
-        fig_m.tight_layout(rect=[0, 0.03, 1, 0.99])
-
-        out_mse = args.output_mse.resolve()
-        out_mse.parent.mkdir(parents=True, exist_ok=True)
-        fig_m.savefig(
-            out_mse,
-            dpi=FIG_DPI,
-            bbox_inches="tight",
-            pad_inches=SAVE_PAD_INCHES,
-            facecolor=fig_m.get_facecolor(),
-        )
-        plt.close(fig_m)
-        print(f"Guardado (MSE train): {out_mse}")
-
-    thr_val: float | None = None
-    if "threshold" in df.columns and df["threshold"].notna().any():
-        thr_val = float(df["threshold"].dropna().iloc[0])
-
-    if args.skip_factores:
-        return
-    if "fpr_at_threshold" not in df.columns or "recall_at_threshold" not in df.columns:
-        print(
-            "Aviso: el CSV no tiene columnas `fpr_at_threshold` / `recall_at_threshold`. "
-            "Volvé a correr el experiment_runner con el código actualizado y regenerá el summary."
-        )
-        return
-
-    _print_factores_best_lrs(agg)
-    _plot_factores_roc_figure(
-        agg, df, args.output_factores.resolve(), thr_val,
-    )
+    _print_summary(agg, best_lrs)
+    print("\nListo. 2 figuras en plots/ej1/")
 
 
 if __name__ == "__main__":
