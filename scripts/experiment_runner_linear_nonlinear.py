@@ -496,17 +496,18 @@ def _linear_job_signature(base: dict) -> tuple:
     return tuple(parts)
 
 
-def expand_jobs(bases: list[dict]) -> list[tuple[dict, str]]:
+def expand_jobs(bases: list[dict], no_linear: bool = False) -> list[tuple[dict, str]]:
     """One non-linear job per base row; one linear job per distinct config ignoring ``activation``."""
     jobs: list[tuple[dict, str]] = []
     seen_linear: set[tuple] = set()
     for b in bases:
-        sig = _linear_job_signature(b)
-        if sig not in seen_linear:
-            seen_linear.add(sig)
-            linear_base = dict(b)
-            linear_base["activation"] = "identity"
-            jobs.append((linear_base, "linear"))
+        if not no_linear:
+            sig = _linear_job_signature(b)
+            if sig not in seen_linear:
+                seen_linear.add(sig)
+                linear_base = dict(b)
+                linear_base["activation"] = "identity"
+                jobs.append((linear_base, "linear"))
         jobs.append((b, "non-linear"))
     return jobs
 
@@ -548,6 +549,11 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Column names to drop from features before training (e.g. --drop col1 col2)"
     )
+    p.add_argument(
+        "--no-linear",
+        action="store_true",
+        help="Skip all linear perceptron jobs; only non-linear runs are executed.",
+    )
     return p.parse_args()
 
 
@@ -569,11 +575,11 @@ def main() -> None:
         cfg = json.load(f)
 
     experiment_bases = experiment_bases_from_config(cfg)
-    jobs = expand_jobs(experiment_bases)
+    jobs = expand_jobs(experiment_bases, no_linear=args.no_linear)
 
+    mode = "non-linear only" if args.no_linear else "linear + non-linear per row"
     print(
-        f"Config loaded: {len(experiment_bases)} grid row(s) -> {len(jobs)} jobs "
-        f"(linear + non-linear per row)."
+        f"Config loaded: {len(experiment_bases)} grid row(s) -> {len(jobs)} jobs ({mode})."
     )
 
     if args.dry_run:

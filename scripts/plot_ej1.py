@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -44,6 +45,16 @@ LABEL_MT  = {"linear": "Lineal", "non-linear": "No lineal"}
 LABEL_ACT = {"logistic": "Logística", "tanh": "Tanh", "relu": "ReLU"}
 
 SHOW_ACTIVATIONS: list[str] | None = ["tanh", "logistic"]
+
+MODEL_TYPES_ORDER = ("linear", "non-linear")
+
+
+def _model_types_present(df: pd.DataFrame) -> list[str]:
+    """Orden fijo linear → non-linear, restringido a los que aparecen en ``df``."""
+    if df.empty or "model_type" not in df.columns:
+        return []
+    u = set(df["model_type"].dropna().astype(str).unique())
+    return [mt for mt in MODEL_TYPES_ORDER if mt in u]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers de estilo
@@ -217,11 +228,12 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
         print("  aviso: no hay activaciones no lineales para Q1a+Q1b; se omite este gráfico.")
         return
     n = len(activations)
+    mts = _model_types_present(full)
 
     # Pre-calcular curvas para determinar ylim y evitar recomputar en el loop de dibujo
     all_curve_data: dict[tuple, tuple] = {}
     for act in activations:
-        for mt in ["linear", "non-linear"]:
+        for mt in mts:
             if mt == "linear":
                 sub_full = full[full["model_type"] == "linear"]
             else:
@@ -244,7 +256,7 @@ def plot_q1ab_curvas(summary: pd.DataFrame, curves: pd.DataFrame) -> None:
             axes = [axes]
 
         for ax, act in zip(axes, activations):
-            for mt in ["linear", "non-linear"]:
+            for mt in mts:
                 best, xs, mean, std, n_seeds = all_curve_data[(act, mt)]
                 if xs.size == 0:
                     continue
@@ -283,6 +295,7 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
     activations = _activations_for_nl_panels(full)
     lrs = sorted(full["lr"].dropna().unique())
     n = len(activations)
+    has_linear = "linear" in _model_types_present(full)
     if n == 0 or len(lrs) == 0:
         print("  aviso: no hay activaciones o learning rates para Q1a+Q1b LR; se omite este gráfico.")
         return
@@ -305,22 +318,28 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
 
             for i, lr in enumerate(lrs):
                 base = i * (w + gap)
-                positions_l.append(base)
-                positions_nl.append(base + 1)
+                if has_linear:
+                    positions_l.append(base)
+                    positions_nl.append(base + 1)
+                    tick_pos.append(base + 0.5)
+                else:
+                    positions_nl.append(base)
+                    tick_pos.append(base)
                 # IQR con factor=3 para eliminar solo divergencias extremas
                 # _remove_outliers_iqr ya descarta Inf/NaN internamente
-                dl  = _remove_outliers_iqr(
-                    af_l[af_l["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
+                if has_linear:
+                    dl = _remove_outliers_iqr(
+                        af_l[af_l["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
+                    data_l.append([max(v, 1e-6) for v in dl if np.isfinite(v)])
                 dnl = _remove_outliers_iqr(
                     af_nl[af_nl["lr"] == lr]["final_train_mse"].dropna().tolist(), factor=3.0)
                 # Escala log requiere valores > 0 y finitos
-                data_l.append([max(v, 1e-6) for v in dl if np.isfinite(v)])
                 data_nl.append([max(v, 1e-6) for v in dnl if np.isfinite(v)])
-                tick_pos.append(base + 0.5)
                 tick_lbl.append(f"{lr:.0e}" if lr < 0.01 else str(lr))
 
-            _boxplot(ax, data_l,  positions_l,
-                     [COLOR_LINEAR]    * len(lrs), [EDGE_MT["linear"]]    * len(lrs))
+            if has_linear:
+                _boxplot(ax, data_l,  positions_l,
+                         [COLOR_LINEAR]    * len(lrs), [EDGE_MT["linear"]]    * len(lrs))
             _boxplot(ax, data_nl, positions_nl,
                      [COLOR_NONLINEAR] * len(lrs), [EDGE_MT["non-linear"]] * len(lrs))
 
@@ -332,20 +351,23 @@ def plot_q1ab_lr(summary: pd.DataFrame) -> None:
             ax.set_xlabel("Tasa de aprendizaje")
 
         from matplotlib.patches import Patch
-        axes[-1].legend(
-            handles=[
-                Patch(facecolor=COLOR_LINEAR,    label="Lineal"),
-                Patch(facecolor=COLOR_NONLINEAR, label="No lineal"),
-            ],
-            fontsize=9, loc="upper right",
-        )
+        leg_handles = [Patch(facecolor=COLOR_NONLINEAR, label="No lineal")]
+        if has_linear:
+            leg_handles.insert(0, Patch(facecolor=COLOR_LINEAR, label="Lineal"))
+        axes[-1].legend(handles=leg_handles, fontsize=9, loc="upper right")
+        ref_mt = "linear" if has_linear else "non-linear"
         n_per_box = int(
-            full[(full["model_type"] == "linear") & (full["lr"] == lrs[0])]["seed"].count()
+            full[(full["model_type"] == ref_mt) & (full["lr"] == lrs[0])]["seed"].count()
         )
         axes[0].set_ylabel(f"MSE final de entrenamiento  (escala logar\u00edtmica, n={n_per_box} por caja)")
+        lr_caption = (
+            "LR bajo: ambos presentan underfitting  |  LR \u00f3ptimo: lineal satura (~5), no lineal converge (~0.01)"
+            if has_linear
+            else "LR bajo: underfitting  |  LR \u00f3ptimo: el no lineal converge a MSE bajo"
+        )
         fig.suptitle(
             "Q1a + Q1b  \u2014  MSE final seg\u00fan tasa de aprendizaje (dataset completo, escala log)\n"
-            "LR bajo: ambos presentan underfitting  |  LR \u00f3ptimo: lineal satura (~5), no lineal converge (~0.01)",
+            + lr_caption,
             fontsize=10,
         )
         _apply_style(fig, *axes)
@@ -368,6 +390,10 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
         print(f"  aviso: sin activaciones no lineales; se omite {filename}.")
         return
     n_act = len(activations)
+    mts = _model_types_present(full)
+    if not mts:
+        print(f"  aviso: sin tipos de modelo para Q1c; se omite {filename}.")
+        return
 
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, n_act, figsize=FIG_SIZE, sharey=True)
@@ -377,7 +403,9 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
         for col, act in enumerate(activations):
             ax = axes[col]
             tick_labels, data_pair = [], []
-            for mt in ["linear", "non-linear"]:
+            pos = list(range(1, len(mts) + 1))
+            faces, edges = [], []
+            for mt in mts:
                 best = _best_lr(full, mt, act)
                 if mt == "linear":
                     raw = full[
@@ -393,13 +421,12 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
                     raw = [max(v, 1e-6) for v in raw]
                 data_pair.append(raw)
                 tick_labels.append(f"{LABEL_MT[mt]}\nlr={best}\nn={len(raw)}")
+                faces.append(COLORS_MT[mt])
+                edges.append(EDGE_MT[mt])
 
-            _boxplot(ax, data_pair, [1, 2],
-                     [COLOR_LINEAR, COLOR_NONLINEAR],
-                     [EDGE_MT["linear"], EDGE_MT["non-linear"]])
-            _jitter_strip(ax, [1, 2], data_pair,
-                          [COLOR_LINEAR, COLOR_NONLINEAR])
-            ax.set_xticks([1, 2])
+            _boxplot(ax, data_pair, pos, faces, edges)
+            _jitter_strip(ax, pos, data_pair, faces)
+            ax.set_xticks(pos)
             ax.set_xticklabels(tick_labels, fontsize=8)
             ax.set_title(f"Activaci\u00f3n: {LABEL_ACT.get(act, act)}", fontsize=11)
             if col == 0:
@@ -409,13 +436,10 @@ def _plot_q1c_panel(full: pd.DataFrame, metric: str, ylabel: str,
             elif ylim_fixed:
                 ax.set_ylim(*ylim_fixed)
 
-        fig.legend(
-            handles=[
-                Patch(facecolor=COLOR_LINEAR,    label="Lineal"),
-                Patch(facecolor=COLOR_NONLINEAR, label="No lineal"),
-            ],
-            loc="upper right", fontsize=9,
-        )
+        leg = [Patch(facecolor=COLOR_NONLINEAR, label="No lineal")]
+        if "linear" in mts:
+            leg.insert(0, Patch(facecolor=COLOR_LINEAR, label="Lineal"))
+        fig.legend(handles=leg, loc="upper right", fontsize=9)
         fig.suptitle(suptitle, fontsize=10)
         _apply_style(fig, *axes)
         fig.tight_layout()
@@ -429,6 +453,7 @@ def plot_q1c(summary: pd.DataFrame) -> None:
     if full.empty:
         print("  aviso: no hay datos para Q1c; se omiten estos gráficos.")
         return
+    has_lin = "linear" in _model_types_present(full)
 
     _plot_q1c_panel(
         full,
@@ -438,8 +463,12 @@ def plot_q1c(summary: pd.DataFrame) -> None:
         ylim_fixed=None,
         suptitle=(
             "Q1c  \u2014  Capacidad de aprendizaje: ROC-AUC al mejor LR\n"
-            "No lineal (log\u00edstica/ReLU) logra mayor AUC que lineal "
-            "\u2192 se selecciona para generalizaci\u00f3n"
+            + (
+                "No lineal (log\u00edstica/ReLU) logra mayor AUC que lineal "
+                "\u2192 se selecciona para generalizaci\u00f3n"
+                if has_lin
+                else "Modelos no lineales: AUC de entrenamiento al mejor LR por activaci\u00f3n"
+            )
         ),
         filename="q1c_roc_auc.png",
     )
@@ -452,8 +481,12 @@ def plot_q1c(summary: pd.DataFrame) -> None:
         ylim_fixed=None,
         suptitle=(
             "Q1c  \u2014  Capacidad de aprendizaje: MSE final al mejor LR  (escala log)\n"
-            "No lineal alcanza MSE ~10\u00d7 menor que lineal "
-            "\u2192 mayor capacidad de representaci\u00f3n"
+            + (
+                "No lineal alcanza MSE ~10\u00d7 menor que lineal "
+                "\u2192 mayor capacidad de representaci\u00f3n"
+                if has_lin
+                else "MSE final de entrenamiento (mejor LR) por activaci\u00f3n no lineal"
+            )
         ),
         filename="q1c_mse_final.png",
     )
@@ -467,6 +500,10 @@ def plot_q1c(summary: pd.DataFrame) -> None:
 def plot_q2a(summary: pd.DataFrame) -> None:
     print("Q2a — justificación de métricas ...")
     split = summary[summary["no_split"] == False]
+    mts = _model_types_present(split)
+    pos = list(range(1, len(mts) + 1))
+    colors_b = [COLORS_MT[mt] for mt in mts]
+    edges_b = [EDGE_MT[mt] for mt in mts]
 
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, 3, figsize=(FIG_SIZE[0] * 1.1, FIG_SIZE[1]))
@@ -500,13 +537,10 @@ def plot_q2a(summary: pd.DataFrame) -> None:
             ("roc_auc",  "ROC-AUC (test)",            (0.8, 1.02)),
         ]):
             data = [split_best[split_best["model_type"] == mt][metric].dropna().tolist()
-                    for mt in ["linear", "non-linear"]]
-            _boxplot(ax, data, [1, 2],
-                     [COLOR_LINEAR, COLOR_NONLINEAR],
-                     [EDGE_MT["linear"], EDGE_MT["non-linear"]])
-            ax.set_xticks([1, 2])
-            ax.set_xticklabels([_mt_tick_label(split_best, mt)
-                                 for mt in ["linear", "non-linear"]], fontsize=8)
+                    for mt in mts]
+            _boxplot(ax, data, pos, colors_b, edges_b)
+            ax.set_xticks(pos)
+            ax.set_xticklabels([_mt_tick_label(split_best, mt) for mt in mts], fontsize=8)
             ax.set_ylabel(ylabel)
             ax.set_title(ylabel, fontsize=10)
             ax.set_ylim(*ylim)
@@ -533,29 +567,28 @@ def plot_q2a(summary: pd.DataFrame) -> None:
 # =============================================================================
 
 def _best_two_models(split: pd.DataFrame) -> tuple:
-    """Devuelve (mt, act, lr) del mejor no-lineal y del mejor lineal."""
+    """Devuelve (mt, act, lr) del mejor no-lineal y del mejor lineal (o None si no hay lineal)."""
     nl_mt, nl_act, nl_lr = (
         split[split["model_type"] == "non-linear"]
         .groupby(["model_type", "activation", "lr"])["roc_auc"]
         .mean().idxmax()
     )
-    l_act, l_lr = (
-        split[split["model_type"] == "linear"]
-        .groupby(["activation", "lr"])["roc_auc"]
-        .mean().idxmax()
-    )
+    lin = split[split["model_type"] == "linear"]
+    if lin.empty:
+        return (nl_mt, nl_act, nl_lr), None
+    l_act, l_lr = lin.groupby(["activation", "lr"])["roc_auc"].mean().idxmax()
     return (nl_mt, nl_act, nl_lr), ("linear", l_act, l_lr)
 
 
 def plot_q2b_split(summary: pd.DataFrame) -> None:
     print("Q2b — generalización vs tamaño de partición ...")
     split = summary[summary["no_split"] == False]
-    (nl_mt, nl_act, nl_lr), (l_mt, l_act, l_lr) = _best_two_models(split)
+    (nl_mt, nl_act, nl_lr), linear_best = _best_two_models(split)
 
-    models = [
-        (nl_mt, nl_act, nl_lr, COLOR_NONLINEAR, EDGE_MT["non-linear"]),
-        (l_mt,  l_act,  l_lr,  COLOR_LINEAR,    EDGE_MT["linear"]),
-    ]
+    models = [(nl_mt, nl_act, nl_lr, COLOR_NONLINEAR, EDGE_MT["non-linear"])]
+    if linear_best is not None:
+        l_mt, l_act, l_lr = linear_best
+        models.append((l_mt, l_act, l_lr, COLOR_LINEAR, EDGE_MT["linear"]))
     metrics = [("roc_auc", "ROC-AUC (test)"), ("best_f1", "F1 \u00f3ptimo (test)")]
 
     with plt.rc_context(PLOT_RC):
@@ -608,14 +641,18 @@ def plot_q2b_split(summary: pd.DataFrame) -> None:
 def plot_q2b_overfitting(summary: pd.DataFrame) -> None:
     print("Q2b — diagn\u00f3stico de overfitting ...")
     split = summary[summary["no_split"] == False]
-    (nl_mt, nl_act, nl_lr), (l_mt, l_act, l_lr) = _best_two_models(split)
+    (nl_mt, nl_act, nl_lr), linear_best = _best_two_models(split)
 
     models = [
         (nl_mt, nl_act, nl_lr, COLOR_NONLINEAR,
          f"No lineal / {LABEL_ACT.get(nl_act, nl_act)},  lr={nl_lr}"),
-        (l_mt,  l_act,  l_lr,  COLOR_LINEAR,
-         f"Lineal / {LABEL_ACT.get(l_act, l_act)},  lr={l_lr}"),
     ]
+    if linear_best is not None:
+        l_mt, l_act, l_lr = linear_best
+        models.append(
+            (l_mt, l_act, l_lr, COLOR_LINEAR,
+             f"Lineal / {LABEL_ACT.get(l_act, l_act)},  lr={l_lr}"),
+        )
 
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(figsize=FIG_SIZE)
@@ -688,17 +725,13 @@ def plot_q2c_roc(roc_df: pd.DataFrame, summary: pd.DataFrame) -> None:
     print(f"  mejor: {best_mt} / {best_act} / lr={best_lr}  "
           f"(AUC medio={best_auc:.4f})")
 
-    # Mejor configuracion lineal
-    lin_act, lin_lr = (
-        split[split["model_type"] == "linear"]
-        .groupby(["activation", "lr"])["roc_auc"]
-        .mean().idxmax()
-    )
-    lin_auc = (
-        split[split["model_type"] == "linear"]
-        .groupby(["activation", "lr"])["roc_auc"]
-        .mean().max()
-    )
+    lin_sub = split[split["model_type"] == "linear"]
+    has_linear = not lin_sub.empty
+    lin_act = lin_lr = None
+    lin_auc = float("nan")
+    if has_linear:
+        lin_act, lin_lr = lin_sub.groupby(["activation", "lr"])["roc_auc"].mean().idxmax()
+        lin_auc = float(lin_sub.groupby(["activation", "lr"])["roc_auc"].mean().max())
 
     common_fpr = np.linspace(0, 1, 200)
 
@@ -726,7 +759,6 @@ def plot_q2c_roc(roc_df: pd.DataFrame, summary: pd.DataFrame) -> None:
                 label="Clasificador aleatorio  (AUC = 0.5)")
 
         n_nl = split[(split["model_type"] == best_mt) & (split["activation"] == best_act) & (split["lr"] == best_lr)]["seed"].nunique()
-        n_l  = split[(split["model_type"] == "linear") & (split["activation"] == lin_act) & (split["lr"] == lin_lr)]["seed"].nunique()
 
         mean_nl, std_nl = _mean_roc(best_mt, best_act, best_lr)
         if mean_nl is not None:
@@ -736,20 +768,29 @@ def plot_q2c_roc(roc_df: pd.DataFrame, summary: pd.DataFrame) -> None:
             ax.fill_between(common_fpr, mean_nl - std_nl, mean_nl + std_nl,
                             color=COLOR_NONLINEAR, alpha=0.2)
 
-        mean_l, std_l = _mean_roc("linear", lin_act, lin_lr)
-        if mean_l is not None:
-            ax.plot(common_fpr, mean_l, color=COLOR_LINEAR, linewidth=2,
-                    linestyle="--",
-                    label=(f"Lineal / {LABEL_ACT.get(lin_act, lin_act)} / "
-                           f"lr={lin_lr}, n={n_l}  (AUC={lin_auc:.4f})"))
+        if has_linear and lin_act is not None and lin_lr is not None:
+            n_l = split[
+                (split["model_type"] == "linear")
+                & (split["activation"] == lin_act)
+                & (split["lr"] == lin_lr)
+            ]["seed"].nunique()
+            mean_l, std_l = _mean_roc("linear", lin_act, lin_lr)
+            if mean_l is not None:
+                ax.plot(common_fpr, mean_l, color=COLOR_LINEAR, linewidth=2,
+                        linestyle="--",
+                        label=(f"Lineal / {LABEL_ACT.get(lin_act, lin_act)} / "
+                               f"lr={lin_lr}, n={n_l}  (AUC={lin_auc:.4f})"))
 
         ax.set_xlabel("Tasa de falsos positivos (FPR)")
         ax.set_ylabel("Tasa de verdaderos positivos (TPR / Recall)")
-        ax.set_title(
+        roc_title = (
             "Q2c  —  Curva ROC: mejor modelo no lineal vs mejor lineal\n"
-            "(promedio sobre semillas y particiones)",
-            fontsize=10,
+            "(promedio sobre semillas y particiones)"
+            if has_linear
+            else "Q2c  —  Curva ROC: mejor modelo no lineal\n"
+                 "(promedio sobre semillas y particiones)"
         )
+        ax.set_title(roc_title, fontsize=10)
         ax.legend(fontsize=8, loc="lower right")
         ax.set_xlim(-0.01, 1.01)
         ax.set_ylim(-0.01, 1.01)
@@ -987,7 +1028,21 @@ def plot_q2c_confusion(summary: pd.DataFrame) -> None:
 # Entry point
 # =============================================================================
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Genera gráficos del ejercicio 1 a partir de los CSV en results/."
+    )
+    p.add_argument(
+        "--no-linear",
+        action="store_true",
+        help="Excluye corridas lineales de los gráficos (p. ej. si el runner se usó con --no-linear).",
+    )
+    return p.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
+
     print("Cargando resultados ...")
     summary = pd.read_csv(RESULTS / "linear_vs_nonlinear_summary.csv")
 
@@ -996,6 +1051,12 @@ def main() -> None:
 
     print("Cargando datos ROC ...")
     roc_df = pd.read_csv(RESULTS / "linear_vs_nonlinear_roc.csv")
+
+    if args.no_linear:
+        summary = summary[summary["model_type"] != "linear"].copy()
+        curves = curves[curves["model_type"] != "linear"].copy()
+        roc_df = roc_df[roc_df["model_type"] != "linear"].copy()
+        print("Modo --no-linear: filas lineales excluidas de summary, curves y roc.")
 
     print(f"\nGenerando gráficos en: {PLOTS}\n")
 

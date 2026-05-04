@@ -51,6 +51,11 @@ class SimpleLinearPerceptron(Perceptron):
                 self.weights += self.learning_rate * error * x_i
                 self.bias    += self.learning_rate * error
 
+            if not (np.all(np.isfinite(self.weights)) and np.isfinite(self.bias)):
+                print(f"  diverged at epoch {epoch + 1}, stopping early")
+                self.epochs_run_ = epoch + 1
+                break
+
             train_pred = self.predict(X)
             train_mse  = self._total_error(X, y) / n_samples
             train_recall = _recall_score(y, train_pred)
