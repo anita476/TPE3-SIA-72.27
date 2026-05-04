@@ -33,6 +33,7 @@ PLOTS = ROOT / "plots" / "ej1"
 RESULTS = ROOT / "results"
 DEFAULT_CONFIG = ROOT / "configs" / "lr_exploration_tanh_logistic.json"
 DEFAULT_SUMMARY = RESULTS / "linear_vs_nonlinear_summary.csv"
+DEFAULT_CURVES = RESULTS / "linear_vs_nonlinear_curves.csv"
 
 COLORS_ACT = {"tanh": "#27ae60", "logistic": "#8e44ad"}
 LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logistica"}
@@ -119,13 +120,48 @@ def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _epochs_to_fraction(
+    curve: np.ndarray,
+    fraction: float = 0.90,
+) -> int | None:
+    """Return first 1-based epoch where the curve reaches `fraction` of total improvement.
+
+    Improvement is measured as drop from first to best (minimum) value.
+    If there is no improvement or curve is invalid, returns None.
+    """
+    if curve.size < 2 or not np.all(np.isfinite(curve)):
+        return None
+    start = float(curve[0])
+    best = float(np.min(curve))
+    total_gain = start - best
+    if total_gain <= 0:
+        return None
+    target = start - fraction * total_gain
+    hit = np.where(curve <= target)[0]
+    if hit.size == 0:
+        return None
+    return int(hit[0] + 1)
+
+
 def _best_lr(agg: pd.DataFrame, act: str) -> float | None:
+    """Return the best LR for `act` by argmax mean ROC-AUC.
+
+    Among LRs within 0.1 std of the maximum (near-ties caused by noise),
+    prefer the one with the smallest generalization gap (train_auc - test_auc).
+    This avoids picking boundary points where early stopping inflates AUC.
+    Falls back to lowest LR if gen_gap is unavailable.
+    """
     sub = agg[agg["activation"] == act].dropna(subset=["roc_auc_mean"])
     if sub.empty:
         return None
-    mx = sub["roc_auc_mean"].max()
-    tied = sub[np.isclose(sub["roc_auc_mean"], mx, atol=1e-9)]
-    return float(tied.sort_values("lr").iloc[0]["lr"])
+    mx    = sub["roc_auc_mean"].max()
+    # tight tolerance: only consider LRs statistically indistinguishable from max
+    noise = float(sub["roc_auc_std"].mean()) * 0.1 if "roc_auc_std" in sub.columns else 1e-5
+    noise = max(noise, 1e-5)
+    plateau = sub[sub["roc_auc_mean"] >= mx - noise]
+    if "gen_gap_mean" in plateau.columns:
+        return float(plateau.loc[plateau["gen_gap_mean"].idxmin(), "lr"])
+    return float(plateau.sort_values("lr").iloc[0]["lr"])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,14 +268,9 @@ def plot_comparacion(
 
     # Metrics to compare (label, mean_col, std_col, higher_is_better)
     metric_defs = [
-        ("ROC-AUC (test)",       "roc_auc_mean",              "roc_auc_std",              True),
-        ("F1 optimo",            "best_f1_mean",              "best_f1_std",              True),
-        ("Recall optimo",        "best_recall_mean",          "best_recall_std",          True),
-        ("Precision optima",     "best_precision_mean",       "best_precision_std",       True),
-        ("Recall @ umbral",      "recall_at_threshold_mean",  "recall_at_threshold_std",  True),
-        ("Precision @ umbral",   "precision_at_threshold_mean","precision_at_threshold_std",True),
-        ("F1 @ umbral",          "f1_at_threshold_mean",      "f1_at_threshold_std",      True),
-        ("Especificidad (1-FPR)","fpr_at_threshold_mean",     "fpr_at_threshold_std",     True),
+        ("ROC-AUC (test)",   "roc_auc_mean",     "roc_auc_std",     True),
+        ("F1 optimo",        "best_f1_mean",      "best_f1_std",     True),
+        ("Recall optimo",    "best_recall_mean",  "best_recall_std", True),
     ]
     # keep only metrics present in agg
     metric_defs = [(lbl, mc, sc, hib) for lbl, mc, sc, hib in metric_defs if mc in agg.columns]
@@ -344,6 +375,260 @@ def plot_comparacion(
         _save(fig, "tanh_vs_logistica_comparacion.png")
 
 
+def plot_convergencia(
+    curves_df: pd.DataFrame,
+    best_lrs: dict[str, float | None],
+) -> None:
+    """Convergence-speed chart: train MSE vs epoch at best LR per activation.
+
+    Train MSE is used as the main convergence criterion.
+    Test MSE is shown as a secondary dashed reference for generalization context.
+    """
+    if curves_df.empty or "train_mse" not in curves_df.columns:
+        print("  [Fig 3] Sin curvas de train_mse para graficar convergencia.")
+        return
+
+    work = curves_df.copy()
+    work["activation"] = work["activation"].map(_norm_act)
+    work = work[work["activation"].isin(["tanh", "logistic"])]
+
+    present = [a for a in ["tanh", "logistic"] if best_lrs.get(a) is not None]
+    if not present:
+        print("  [Fig 3] No hay activaciones con mejor LR para graficar convergencia.")
+        return
+
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.95, FIG_SIZE[1] * 0.92))
+        legend_rows: list[str] = []
+
+        for act in present:
+            lr = float(best_lrs[act])
+            sub = work[
+                (work["activation"] == act) &
+                np.isclose(work["lr"].astype(float), lr, atol=1e-12)
+            ][["seed", "epoch", "train_mse", "test_mse"]]
+
+            if sub.empty:
+                continue
+
+            pivot_train = (
+                sub.dropna(subset=["train_mse"])
+                .pivot_table(index="epoch", columns="seed", values="train_mse", aggfunc="mean")
+                .sort_index()
+            )
+            if pivot_train.empty:
+                continue
+
+            y_mean = pivot_train.mean(axis=1).to_numpy(float)
+            y_std = pivot_train.std(axis=1).fillna(0.0).to_numpy(float)
+            x = pivot_train.index.to_numpy(int)
+
+            color = COLORS_ACT[act]
+            ax.plot(x, y_mean, color=color, linewidth=2.2, label=f"{LABEL_ACT[act]} (train)")
+            ax.fill_between(x, np.maximum(y_mean - y_std, 1e-12), y_mean + y_std,
+                            color=color, alpha=0.18, linewidth=0)
+
+            pivot_test = (
+                sub.dropna(subset=["test_mse"])
+                .pivot_table(index="epoch", columns="seed", values="test_mse", aggfunc="mean")
+                .sort_index()
+            )
+            if not pivot_test.empty:
+                yt_mean = pivot_test.mean(axis=1).to_numpy(float)
+                xt = pivot_test.index.to_numpy(int)
+                ax.plot(
+                    xt,
+                    yt_mean,
+                    color=color,
+                    linestyle="--",
+                    linewidth=1.4,
+                    alpha=0.8,
+                    label=f"{LABEL_ACT[act]} (test)",
+                )
+
+            best_idx = int(np.argmin(y_mean))
+            ax.scatter([x[best_idx]], [y_mean[best_idx]], s=120, marker="*",
+                       color=color, edgecolors="#2c3e50", linewidths=0.7, zorder=8)
+
+            ep90 = _epochs_to_fraction(y_mean, fraction=0.90)
+            if ep90 is not None:
+                ax.axvline(ep90, color=color, linestyle="--", linewidth=1.2, alpha=0.75)
+                legend_rows.append(f"{LABEL_ACT[act]}: ep90={ep90} (lr={lr:g})")
+            else:
+                legend_rows.append(f"{LABEL_ACT[act]}: ep90=n/a (lr={lr:g})")
+
+        ax.set_yscale("log")
+        ax.set_xlabel("Epoca")
+        ax.set_ylabel("MSE (escala log)")
+        ax.set_title("Velocidad de convergencia (train) en el mejor LR por activacion", fontsize=10.5)
+        ax.legend(fontsize=8.5, loc="upper right")
+
+        if legend_rows:
+            ax.text(
+                0.02,
+                0.02,
+                "\n".join(legend_rows),
+                transform=ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=8.3,
+                color=STYLE["text_title"],
+                bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="#bdc3c7", alpha=0.9),
+            )
+
+        _apply_style(fig, ax)
+        fig.tight_layout()
+        _save(fig, "tanh_vs_logistica_convergencia.png")
+
+
+def plot_convergencia_todos_lrs(curves_df: pd.DataFrame) -> None:
+    """Convergence chart using train MSE for all LRs per activation."""
+    if curves_df.empty or "train_mse" not in curves_df.columns:
+        print("  [Fig 4] Sin curvas de train_mse para graficar todos los LR.")
+        return
+
+    work = curves_df.copy()
+    work["activation"] = work["activation"].map(_norm_act)
+    work = work[work["activation"].isin(["tanh", "logistic"])]
+    if work.empty:
+        print("  [Fig 4] Sin activaciones tanh/logistic para graficar todos los LR.")
+        return
+
+    present = [a for a in ["tanh", "logistic"] if a in set(work["activation"])]
+    with plt.rc_context(PLOT_RC):
+        fig, axes = plt.subplots(1, len(present), figsize=(FIG_SIZE[0] * 1.3, FIG_SIZE[1] * 0.9), squeeze=False)
+        ax_list = axes.ravel().tolist()
+
+        for i, act in enumerate(present):
+            ax = ax_list[i]
+            sub = work[work["activation"] == act].dropna(subset=["train_mse"])
+            if sub.empty:
+                ax.set_title(f"{LABEL_ACT[act]} (sin datos)")
+                continue
+
+            lrs = sorted(sub["lr"].astype(float).unique().tolist())
+            cmap = plt.cm.viridis(np.linspace(0.12, 0.92, len(lrs)))
+
+            for color, lr in zip(cmap, lrs):
+                lr_sub = sub[np.isclose(sub["lr"].astype(float), lr, atol=1e-12)][["seed", "epoch", "train_mse"]]
+                pivot = (
+                    lr_sub.pivot_table(index="epoch", columns="seed", values="train_mse", aggfunc="mean")
+                    .sort_index()
+                )
+                if pivot.empty:
+                    continue
+
+                x = pivot.index.to_numpy(int)
+                y_mean = pivot.mean(axis=1).to_numpy(float)
+                y_std = pivot.std(axis=1).fillna(0.0).to_numpy(float)
+
+                ax.plot(x, y_mean, color=color, linewidth=1.7, label=f"lr={lr:g}")
+                ax.fill_between(
+                    x,
+                    np.maximum(y_mean - y_std, 1e-12),
+                    y_mean + y_std,
+                    color=color,
+                    alpha=0.12,
+                    linewidth=0,
+                )
+
+            ax.set_yscale("log")
+            ax.set_xlabel("Epoca")
+            ax.set_ylabel("Train MSE (escala log)")
+            ax.set_title(f"{LABEL_ACT[act]} -- todos los LR", fontsize=10)
+            ax.legend(fontsize=7.2, ncol=2, loc="upper right", framealpha=0.9)
+
+        _apply_style(fig, *ax_list)
+        fig.suptitle("Convergencia por activacion con todos los learning rates", fontsize=10.5)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        _save(fig, "tanh_vs_logistica_convergencia_todos_lrs.png")
+
+
+def plot_last_mse_vs_lr(agg: pd.DataFrame) -> None:
+    """Final train MSE as bar chart per (activation, lr) configuration."""
+    if "final_train_mse_mean" not in agg.columns:
+        print("  [Fig 5] No existe final_train_mse_mean en el agregado.")
+        return
+
+    present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
+    if not present:
+        print("  [Fig 5] Sin activaciones tanh/logistic para graficar last MSE.")
+        return
+
+    rows: list[tuple[str, float, float, float]] = []
+    for act in present:
+        sub = agg[agg["activation"] == act].sort_values("lr")
+        for _, r in sub.iterrows():
+            rows.append(
+                (
+                    act,
+                    float(r["lr"]),
+                    float(r["final_train_mse_mean"]),
+                    float(r["final_train_mse_std"]) if "final_train_mse_std" in sub.columns else 0.0,
+                )
+            )
+    if not rows:
+        print("  [Fig 5] No hay filas para construir el grafico de barras.")
+        return
+
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 1.15, FIG_SIZE[1] * 0.95))
+
+        x = np.arange(len(rows))
+        means = np.array([r[2] for r in rows], dtype=float)
+        stds = np.array([r[3] for r in rows], dtype=float)
+        colors = [COLORS_ACT[r[0]] for r in rows]
+        labels = [f"{LABEL_ACT[r[0]]}\nlr={r[1]:g}" for r in rows]
+
+        bars = ax.bar(
+            x,
+            means,
+            yerr=stds,
+            color=colors,
+            alpha=0.82,
+            edgecolor=colors,
+            linewidth=0.8,
+            error_kw=dict(ecolor="#2c3e50", capsize=3, linewidth=1.2),
+        )
+
+        # Highlight best configuration (minimum last mse) for each activation
+        for act in present:
+            idxs = [i for i, r in enumerate(rows) if r[0] == act]
+            if not idxs:
+                continue
+            best_idx = min(idxs, key=lambda i: rows[i][2])
+            bars[best_idx].set_linewidth(1.8)
+            bars[best_idx].set_edgecolor("#1f2d3d")
+
+        for i, (m, s) in enumerate(zip(means, stds)):
+            y_txt = m + s + max(0.00002, 0.03 * np.nanmax(means))
+            ax.text(
+                i,
+                y_txt,
+                f"{m:.4f}\n±{s:.4f}",
+                ha="center",
+                va="bottom",
+                fontsize=7.1,
+                color=STYLE["text_title"],
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
+        ax.set_ylabel("Last MSE (train)")
+        ax.set_title("Last MSE por configuracion", fontsize=10.5)
+
+        legend_handles = [
+            mpatches.Patch(facecolor=COLORS_ACT[a], edgecolor=COLORS_ACT[a], alpha=0.82, label=LABEL_ACT[a])
+            for a in present
+        ]
+        ax.legend(handles=legend_handles, fontsize=8.5, loc="upper right")
+
+        _apply_style(fig, ax)
+        ax.grid(axis="x", which="both", visible=False)
+        fig.tight_layout()
+        _save(fig, "tanh_vs_logistica_last_mse.png")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Console summary
 # ─────────────────────────────────────────────────────────────────────────────
@@ -429,6 +714,8 @@ def parse_args() -> argparse.Namespace:
                    help=f"Config JSON (default: {DEFAULT_CONFIG.name})")
     p.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY,
                    help=f"Summary CSV (default: {DEFAULT_SUMMARY.name})")
+    p.add_argument("--curves", type=Path, default=DEFAULT_CURVES,
+                   help=f"Curves CSV (default: {DEFAULT_CURVES.name})")
     return p.parse_args()
 
 
@@ -453,6 +740,7 @@ def main() -> None:
     summary_path = args.summary.resolve()
     if not summary_path.is_file():
         raise SystemExit(f"Summary no encontrado: {summary_path}")
+    curves_path = args.curves.resolve()
 
     print(f"Config: {cfg_path.name}  |  test_per={test_per}  |  umbral={thr}")
 
@@ -475,9 +763,20 @@ def main() -> None:
 
     print("[Fig 2] Comparacion final...")
     plot_comparacion(agg, best_lrs)
+    print("[Fig 5] Last MSE por LR...")
+    plot_last_mse_vs_lr(agg)
+
+    if curves_path.is_file():
+        curves_df = pd.read_csv(curves_path)
+        print("[Fig 3] Velocidad de convergencia...")
+        plot_convergencia(curves_df, best_lrs)
+        print("[Fig 4] Convergencia con todos los LR...")
+        plot_convergencia_todos_lrs(curves_df)
+    else:
+        print(f"[Fig 3] Omitida: curves CSV no encontrado ({curves_path})")
 
     _print_summary(agg, best_lrs)
-    print("\nListo. 2 figuras en plots/ej1/")
+    print("\nListo. Figuras generadas en plots/ej1/")
 
 
 if __name__ == "__main__":
