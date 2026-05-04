@@ -113,8 +113,20 @@ def metrics_at_threshold(
     y_scores: np.ndarray,
     threshold: float,
 ) -> dict:
-    """Compute binary metrics at a specific decision threshold."""
+    """Compute binary metrics at a specific decision threshold.
+
+    ``recall`` is TPR (sensitivity); ``fpr`` is FP / (TN+FP)
+    """
     y_true_bin = binarize(y_true)
     pred = (y_scores >= threshold).astype(int)
     p, r, f = precision_recall_f1(y_true_bin, pred)
-    return {"threshold": threshold, "precision": p, "recall": r, "f1": f}
+    fp = int(np.sum((y_true_bin == 0) & (pred == 1)))
+    n_neg = int((y_true_bin == 0).sum())
+    fpr = float(fp / n_neg) if n_neg > 0 else 0.0
+    return {
+        "threshold": threshold,
+        "precision": p,
+        "recall": r,
+        "f1": f,
+        "fpr": fpr,
+    }

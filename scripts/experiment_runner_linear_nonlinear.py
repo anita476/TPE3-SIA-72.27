@@ -71,6 +71,27 @@ def _split_seeds(merged: dict) -> list[dict]:
     return [{**m, "seed": 1}]
 
 
+def _drop_cols_from_config(cfg: dict) -> list[str]:
+    """Optional top-level ``drop`` key: list of feature column names (same as CLI ``--drop``)."""
+    raw = cfg.get("drop")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SystemExit("Config key 'drop' must be a JSON array of strings.")
+    out = []
+    for i, x in enumerate(raw):
+        if not isinstance(x, str) or not x.strip():
+            raise SystemExit(f"Config 'drop' entry at index {i} must be a non-empty string.")
+        out.append(x.strip())
+    return out
+
+
+def _merge_drop_cols(cfg: dict, cli_drop: list[str]) -> list[str]:
+    """Union of config ``drop`` and CLI ``--drop`` (order preserved, no duplicates)."""
+    merged = _drop_cols_from_config(cfg) + list(cli_drop)
+    return list(dict.fromkeys(merged))
+
+
 def experiment_bases_from_config(cfg: dict) -> list[dict]:
     """Build a flat list of experiment dicts from a JSON config.
 
@@ -236,9 +257,9 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
     # ------------------------------------------------------------------
     roc_auc_val = float("nan")
     best_thr = best_f1 = best_prec = best_rec = float("nan")
-    f1_half = prec_half = rec_half = float("nan")
+    f1_half = prec_half = rec_half = fpr_half = float("nan")
     train_roc_auc_val = float("nan")
-    train_f1_half = train_prec_half = train_rec_half = float("nan")
+    train_f1_half = train_prec_half = train_rec_half = train_fpr_half = float("nan")
 
     if n_test > 0:
         roc_auc_val = roc_auc(y_test, test_preds)
@@ -255,6 +276,7 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         f1_half   = half["f1"]
         prec_half = half["precision"]
         rec_half  = half["recall"]
+        fpr_half  = half["fpr"]
 
     if n_train > 0:
         train_roc_auc_val = roc_auc(y_train, train_preds)
@@ -262,6 +284,7 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         train_f1_half      = tr_half["f1"]
         train_prec_half    = tr_half["precision"]
         train_rec_half     = tr_half["recall"]
+        train_fpr_half     = tr_half["fpr"]
 
     # ------------------------------------------------------------------
     # Confusion matrix (discrete 2x2 for binary labels, binned otherwise)
@@ -332,11 +355,13 @@ def run_single(job: tuple[dict, str], drop_cols: list[str] = []) -> dict:
         "f1_at_threshold":           _r(f1_half),
         "precision_at_threshold":    _r(prec_half),
         "recall_at_threshold":       _r(rec_half),
+        "fpr_at_threshold":          _r(fpr_half),
         # --- binary fraud metrics (train set — for overfitting diagnosis) ---
         "train_roc_auc":        _r(train_roc_auc_val),
         "train_f1_at_threshold":     _r(train_f1_half),
         "train_precision_at_threshold": _r(train_prec_half),
         "train_recall_at_threshold": _r(train_rec_half),
+        "train_fpr_at_threshold":    _r(train_fpr_half),
         # --- metadata ---
         "confusion_meta_json":  json.dumps(meta, ensure_ascii=False),
     }
@@ -547,7 +572,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         nargs="*",
         default=[],
-        help="Column names to drop from features before training (e.g. --drop col1 col2)"
+        help="Extra columns to drop (merged with optional top-level 'drop' array in the JSON config).",
     )
     p.add_argument(
         "--no-linear",
@@ -574,6 +599,10 @@ def main() -> None:
     with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
 
+    drop_cols = _merge_drop_cols(cfg, args.drop)
+    if drop_cols:
+        print(f"Feature columns dropped before training: {drop_cols}")
+
     experiment_bases = experiment_bases_from_config(cfg)
     jobs = expand_jobs(experiment_bases, no_linear=args.no_linear)
 
@@ -594,10 +623,10 @@ def main() -> None:
     print(f"Running {len(jobs)} jobs on {n_workers} worker(s)...")
 
     if n_workers <= 1:
-        out = [_worker(j, args.drop) for j in jobs]
+        out = [_worker(j, drop_cols) for j in jobs]
     else:
         import functools
-        worker_fn = functools.partial(_worker, drop_cols=args.drop)
+        worker_fn = functools.partial(_worker, drop_cols=drop_cols)
         with mp.Pool(n_workers) as pool:
             out = pool.map(worker_fn, jobs)
 
