@@ -18,6 +18,7 @@ from utils.style import FIG_DPI, FIG_SIZE, PLOT_RC, SAVE_PAD_INCHES, STYLE
 
 DEFAULT_SUMMARY = ROOT / "results" / "linear_vs_nonlinear_summary.csv"
 DEFAULT_OUTPUT = ROOT / "plots" / "ej1" / "comparacion_tanh_vs_logistica.png"
+DEFAULT_OUTPUT_MSE = ROOT / "plots" / "ej1" / "comparacion_tanh_vs_logistica_mse.png"
 DEFAULT_OUTPUT_FACTORES = ROOT / "plots" / "ej1" / "comparacion_tanh_vs_logistica_factores_roc.png"
 
 COLORS_ACT = {
@@ -150,7 +151,23 @@ def _report_best_lrs_roc_test(agg: pd.DataFrame) -> str:
             lines.append(f"  {lab}: (sin datos)")
             continue
         lr_b, v = got
-        lines.append(f"  {lab}:  lr = {lr_b:g}    (AUC medio ≈ {v:.6f})")
+        lines.append(f"  {lab}:  lr = {lr_b:g}    (AUC medio ~ {v:.6f})")
+
+    return "\n".join(lines).strip()
+
+
+def _report_best_lrs_final_train_mse(agg: pd.DataFrame) -> str:
+    """Mejor LR por activación según MSE final de entrenamiento (menor es mejor)."""
+    lines: list[str] = ["--- Mejor LR por activación (MSE final train, media; menor es mejor) ---"]
+
+    for act in ("tanh", "logistic"):
+        got = _best_lr_for_activation(agg, act, "final_train_mse_mean", minimize=True)
+        lab = LABEL_ACT[act]
+        if got is None:
+            lines.append(f"  {lab}: (sin datos)")
+            continue
+        lr_b, v = got
+        lines.append(f"  {lab}:  lr = {lr_b:g}    (MSE medio ~ {v:.6f})")
 
     return "\n".join(lines).strip()
 
@@ -163,6 +180,8 @@ def _plot_panel(
     ylabel: str,
     title: str,
     log_y: bool,
+    *,
+    show_xlabel: bool = True,
 ) -> None:
     for act in ACTIVATION_ORDER:
         sub = _curve_for_activation(agg, act)
@@ -179,7 +198,8 @@ def _plot_panel(
         if log_y:
             lo = np.maximum(lo, 1e-8)
         ax.fill_between(xs, lo, hi, color=color, alpha=0.18, linewidth=0)
-    ax.set_xlabel("Learning rate (escala log)")
+    if show_xlabel:
+        ax.set_xlabel("Learning rate (escala log)")
     ax.set_ylabel(ylabel)
     ax.set_title(title, fontsize=11)
     if log_y:
@@ -231,7 +251,6 @@ def _mark_optima_on_panel(
 def _plot_factores_roc_figure(
     agg: pd.DataFrame,
     df: pd.DataFrame,
-    tp_desc: str,
     out_path: Path,
     threshold_val: float | None,
 ) -> None:
@@ -283,15 +302,8 @@ def _plot_factores_roc_figure(
             ax.legend(fontsize=9, loc="best")
             ax.set_xlim(left=df["lr"].min() * 0.85, right=df["lr"].max() * 1.15)
 
-        fig.suptitle(
-            "Factores del ranking ROC (Tanh vs Logística)\n"
-            f"{tp_desc}  |  no_split=False  |  banda: media ± 1 desvío estándar",
-            fontsize=11,
-            color=STYLE["text_title"],
-        )
-
         _apply_style(fig, ax00, ax01, ax10, ax11)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.92])
+        fig.tight_layout(rect=[0, 0.03, 1, 0.99])
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(
@@ -323,13 +335,16 @@ def _print_factores_best_lrs(agg: pd.DataFrame) -> None:
                 print(f"    {lab}: —")
             else:
                 lr_b, v = got
-                print(f"    {lab}: lr = {lr_b:g}  (media ≈ {v:.6f})")
+                print(f"    {lab}: lr = {lr_b:g}  (media ~ {v:.6f})")
     print()
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Figura ROC-AUC en test (y opcionalmente factores ROC): Tanh vs Logística."
+        description=(
+            "Figuras Tanh vs Logística: ROC-AUC en test (PNG principal), "
+            "MSE final train en otro PNG con escala lineal, y opcionalmente factores ROC."
+        )
     )
     p.add_argument(
         "--summary",
@@ -341,7 +356,14 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help=f"Ruta del PNG (default: {DEFAULT_OUTPUT})",
+        help=f"PNG de ROC-AUC en test (default: {DEFAULT_OUTPUT})",
+    )
+    p.add_argument(
+        "--output-mse",
+        type=Path,
+        dest="output_mse",
+        default=DEFAULT_OUTPUT_MSE,
+        help=f"PNG de MSE final train, escala lineal (default: {DEFAULT_OUTPUT_MSE})",
     )
     p.add_argument(
         "--test-per",
@@ -393,16 +415,12 @@ def main() -> None:
 
     agg = _aggregate(df)
 
-    test_per_note = args.test_per.strip().lower()
-    if test_per_note == "all":
-        tp_desc = "test_per: todos (promedio conjunto)"
-    elif test_per_note in ("null", "none", "nan"):
-        tp_desc = "test_per: null (dataset completo en el CSV)"
-    else:
-        tp_desc = f"test_per = {args.test_per}"
-
     print(_report_best_lrs_roc_test(agg))
     print()
+    print(_report_best_lrs_final_train_mse(agg))
+    print()
+
+    lr_xlim = (df["lr"].min() * 0.85, df["lr"].max() * 1.15)
 
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(1, 1, figsize=(FIG_SIZE[0], FIG_SIZE[1] * 0.82))
@@ -416,17 +434,10 @@ def main() -> None:
         _mark_optima_on_panel(ax, agg, "roc_auc_mean", minimize=False)
 
         ax.legend(fontsize=10, loc="best")
-        ax.set_xlim(left=df["lr"].min() * 0.85, right=df["lr"].max() * 1.15)
-
-        fig.suptitle(
-            "Tanh vs Logística  —  ROC-AUC en test\n"
-            f"{tp_desc}  |  no_split=False",
-            fontsize=11,
-            color=STYLE["text_title"],
-        )
+        ax.set_xlim(left=lr_xlim[0], right=lr_xlim[1])
 
         _apply_style(fig, ax)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.93])
+        fig.tight_layout(rect=[0, 0.03, 1, 0.99])
 
         out = args.output.resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -438,7 +449,36 @@ def main() -> None:
             facecolor=fig.get_facecolor(),
         )
         plt.close(fig)
-        print(f"Guardado: {out}")
+        print(f"Guardado (ROC-AUC): {out}")
+
+    with plt.rc_context(PLOT_RC):
+        fig_m, ax_m = plt.subplots(1, 1, figsize=(FIG_SIZE[0], FIG_SIZE[1] * 0.82))
+
+        _plot_panel(
+            ax_m, agg, "final_train_mse_mean", "final_train_mse_std",
+            "MSE final (train)",
+            "MSE final de entrenamiento",
+            log_y=False,
+        )
+        _mark_optima_on_panel(ax_m, agg, "final_train_mse_mean", minimize=True)
+
+        ax_m.legend(fontsize=10, loc="best")
+        ax_m.set_xlim(left=lr_xlim[0], right=lr_xlim[1])
+
+        _apply_style(fig_m, ax_m)
+        fig_m.tight_layout(rect=[0, 0.03, 1, 0.99])
+
+        out_mse = args.output_mse.resolve()
+        out_mse.parent.mkdir(parents=True, exist_ok=True)
+        fig_m.savefig(
+            out_mse,
+            dpi=FIG_DPI,
+            bbox_inches="tight",
+            pad_inches=SAVE_PAD_INCHES,
+            facecolor=fig_m.get_facecolor(),
+        )
+        plt.close(fig_m)
+        print(f"Guardado (MSE train): {out_mse}")
 
     thr_val: float | None = None
     if "threshold" in df.columns and df["threshold"].notna().any():
@@ -455,7 +495,7 @@ def main() -> None:
 
     _print_factores_best_lrs(agg)
     _plot_factores_roc_figure(
-        agg, df, tp_desc, args.output_factores.resolve(), thr_val,
+        agg, df, args.output_factores.resolve(), thr_val,
     )
 
 
