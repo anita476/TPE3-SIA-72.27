@@ -8,6 +8,9 @@ Genera 8 figuras respondiendo las tres preguntas del trabajo:
 
 Uso:
     python scripts/generalization_study.py [--config configs/experiments_generalization.json]
+
+El config puede incluir ``activation_lr_pairs`` con una sola activación (p. ej. solo tanh):
+los gráficos y la selección del mejor modelo usan solo las filas presentes en los CSV.
 """
 from __future__ import annotations
 
@@ -46,6 +49,32 @@ def _lr_match(series: pd.Series, lr: float) -> pd.Series:
 def _norm_act(s: str) -> str:
     a = str(s).strip().lower()
     return "logistic" if a in ("logistics", "sigmoid") else a
+
+
+def _present_binary_activations(df: pd.DataFrame) -> list[str]:
+    """Tanh y/o logistic presentes en `df`, en orden fijo."""
+    if df.empty or "activation" not in df.columns:
+        return []
+    vals = set(df["activation"].astype(str).map(_norm_act))
+    return [a for a in ("tanh", "logistic") if a in vals]
+
+
+def _q2a_metricas_title(acts: list[str]) -> str:
+    if len(acts) == 0:
+        return "Comparación de métricas vs clasificador trivial"
+    if len(acts) == 1:
+        return (
+            f"Comparación de métricas — {LABEL_ACT[acts[0]]} vs clasificador trivial"
+        )
+    return "Comparación de métricas — Tanh vs Logística vs clasificador trivial"
+
+
+def _q2c_roc_title(present_acts: list[str]) -> str:
+    if len(present_acts) == 0:
+        return "Curva ROC"
+    if len(present_acts) == 1:
+        return f"Curva ROC — {LABEL_ACT[present_acts[0]]}"
+    return "Curva ROC — comparación de activaciones"
 
 
 def _apply_style(fig: plt.Figure, *axes: plt.Axes) -> None:
@@ -176,9 +205,13 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
         ("best_f1",              "F1 (opt.)"),
         ("best_recall",          "Recall (opt.)"),
     ]
-    activations = [a for a in ["tanh", "logistic"] if a in sub["activation"].values]
+    activations = _present_binary_activations(sub)
+    if not activations:
+        print(f"  [Q2a-metricas] Sin activaciones tanh/logistic en test_per={test_per}")
+        return
     n_metrics   = len(metrics)
-    width       = 0.32
+    n_acts      = len(activations)
+    width       = 0.5 if n_acts <= 1 else 0.32
     gap         = 0.08
 
     with plt.rc_context(PLOT_RC):
@@ -190,7 +223,11 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
                 if rows.empty or col not in rows.columns:
                     continue
                 vals = rows[col].dropna().values
-                pos  = i + (j - 0.5) * (width + gap / 2)
+                pos = (
+                    float(i)
+                    if n_acts <= 1
+                    else i + (j - 0.5) * (width + gap / 2)
+                )
                 ax.boxplot(
                     vals,
                     positions=[pos],
@@ -210,7 +247,7 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
         ax.set_xticklabels([m[1] for m in metrics])
         ax.set_ylabel("Valor (0–1)")
         ax.set_ylim(0, 1.08)
-        ax.set_title("Comparación de métricas — ambas activaciones vs clasificador trivial")
+        ax.set_title(_q2a_metricas_title(activations))
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[act], alpha=0.7, label=LABEL_ACT[act])
@@ -237,7 +274,7 @@ def plot_q2a_pr_curve(roc: pd.DataFrame, test_per: float) -> None:
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.82, FIG_SIZE[1] * 0.85))
 
-        present_acts = [a for a in ["tanh", "logistic"] if a in sub["activation"].values]
+        present_acts = _present_binary_activations(sub)
         for act in present_acts:
             rows = sub[sub["activation"] == act]
             curves: list[np.ndarray] = []
@@ -337,7 +374,7 @@ def _agg_by_tp(split: pd.DataFrame, activation: str) -> dict[float, tuple[float,
 def plot_q2b_auc_line(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> None:
     """AUC vs porcentaje de test — líneas con banda de error.
     Incluye el punto en x=0 (sin particion, AUC en entrenamiento)."""
-    present_acts = [a for a in ["tanh", "logistic"] if a in split["activation"].values]
+    present_acts = _present_binary_activations(split)
     markers = {"tanh": "o", "logistic": "s"}
 
     with plt.rc_context(PLOT_RC):
@@ -404,7 +441,7 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: fl
     """Boxplots de AUC por porcentaje de test.
     Incluye columna extra a la izquierda para el caso sin particion (x=0)."""
     tp_vals      = sorted(split["test_per"].dropna().unique())
-    present_acts = [a for a in ["tanh", "logistic"] if a in split["activation"].values]
+    present_acts = _present_binary_activations(split)
     has_nosplit  = not nosplit.empty and any(
         not nosplit[nosplit["activation"] == a]["roc_auc"].dropna().empty
         for a in present_acts
@@ -492,12 +529,12 @@ def _print_q2b(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> Non
     print(f"Estrategia: particion estratificada por clase, repetida sobre {n_seeds} semillas.")
     if not nosplit.empty:
         print("  Caso sin particion incluido (AUC en entrenamiento, cota superior).")
-        for act in ["tanh", "logistic"]:
+        for act in _present_binary_activations(nosplit):
             rows = nosplit[nosplit["activation"] == act]["roc_auc"].dropna()
             if not rows.empty:
                 print(f"  Sin particion {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
     print(f"Porcentaje de test recomendado: {rec_tp*100:.0f}% (test_per = {rec_tp})")
-    for act in ["tanh", "logistic"]:
+    for act in _present_binary_activations(split):
         rows = split[
             (split["activation"] == act) &
             np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
@@ -515,12 +552,11 @@ def _best_activation(
     split: pd.DataFrame, rec_tp: float,
     tanh_lr: float | None, logistic_lr: float | None,
 ) -> tuple[str, float]:
+    sub_tp = split[np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)]
+    acts_here = [a for a in ("tanh", "logistic") if a in sub_tp["activation"].values]
     best_act, best_auc = None, -1.0
-    for act in ["tanh", "logistic"]:
-        rows = split[
-            (split["activation"] == act) &
-            np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
-        ]
+    for act in acts_here:
+        rows = sub_tp[sub_tp["activation"] == act]
         if rows.empty:
             continue
         m = float(rows["roc_auc"].mean())
@@ -584,13 +620,18 @@ def _recommend_threshold(roc: pd.DataFrame, best_act: str, rec_tp: float) -> flo
     return float(thr_grid[np.argmax(mean_f1)])
 
 
-def plot_q2c_roc(roc: pd.DataFrame, rec_tp: float, best_act: str, tanh_lr: float, logistic_lr: float) -> None:
+def plot_q2c_roc(roc: pd.DataFrame, rec_tp: float, best_act: str) -> None:
+    roc_tp = roc[np.isclose(roc["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)]
+    present_acts = _present_binary_activations(roc_tp)
+    if not present_acts:
+        print(f"  [Q2c-roc] Sin filas ROC para test_per={rec_tp} (revisar results).")
+        return
+
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.78, FIG_SIZE[1] * 0.88))
 
         ax.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.5, label="Azar (AUC = 0.500)")
 
-        present_acts = [a for a in ["tanh", "logistic"] if a in roc["activation"].values]
         for act in present_acts:
             fpr_g, mean_tpr, std_tpr = _interp_roc_curves(roc, act, rec_tp)
             auc_val = float(np.trapezoid(mean_tpr, fpr_g))
@@ -609,7 +650,7 @@ def plot_q2c_roc(roc: pd.DataFrame, rec_tp: float, best_act: str, tanh_lr: float
         ax.set_xlabel("Tasa de falsos positivos (FPR)")
         ax.set_ylabel("Tasa de verdaderos positivos (Recall)")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1.02)
-        ax.set_title("Curva ROC — comparación de activaciones")
+        ax.set_title(_q2c_roc_title(present_acts))
         ax.legend(fontsize=9, loc="lower right")
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -787,7 +828,8 @@ def _print_q2c(split: pd.DataFrame, roc: pd.DataFrame,
         print(f"  F1 opt.  = {rows['best_f1'].mean():.4f} +- {rows['best_f1'].std(ddof=0):.4f}")
         print(f"  Umbral recomendado: {best_thr:.3f} (maximiza F1)")
         print(f"  Recall (F1-opt.): {rows['best_recall'].mean() * 100:.1f}%  (fraude detectado)")
-        print(f"  FPR @ umbral fijo: {rows['fpr_at_threshold'].mean() * 100:.1f}%  (alarmas falsas @ thr=0.5)")
+        print(f"  FPR @ umbral fijo (0.5): {rows['fpr_at_threshold'].mean() * 100:.1f}%")
+        print(f"  Precision (F1-opt.): {rows['best_precision'].mean() * 100:.1f}%")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -818,7 +860,15 @@ def _lrs_from_config(cfg: dict) -> tuple[float | None, float | None]:
 
 
 def _test_per_from_config(cfg: dict) -> float:
-    """Primer test_per no-nulo del grid, o 0.20 si no hay."""
+    """test_per usado en Q2a (distribución, métricas, PR).
+
+    Si ``base.q2a_test_per`` está definido, tiene prioridad.
+    Si no, se usa el primer ``test_per`` no nulo del ``grid`` (orden del JSON),
+    o 0.20 por defecto.
+    """
+    base = cfg.get("base") or {}
+    if base.get("q2a_test_per") is not None:
+        return float(base["q2a_test_per"])
     vals = [v for v in cfg.get("grid", {}).get("test_per", []) if v is not None]
     return float(vals[0]) if vals else 0.20
 
@@ -839,6 +889,8 @@ def main() -> None:
     if logistic_lr is not None:
         acts_info.append(f"logistic lr={logistic_lr:g}")
     print(f"Config: {cfg_path.name}  |  {', '.join(acts_info) or 'todas las activaciones'}")
+    print(f"  Q2a (distrib / métricas / PR): test_per = {test_per}"
+          f"{'  (base.q2a_test_per)' if (cfg.get('base') or {}).get('q2a_test_per') is not None else '  (primer test_per no nulo del grid, o 0.20)'}")
 
     _, split, nosplit, roc = _load(tanh_lr, logistic_lr)
 
@@ -862,7 +914,7 @@ def main() -> None:
     print("\n[Q2c] Mejor modelo...")
     best_act, best_lr = _best_activation(split, rec_tp, tanh_lr, logistic_lr)
     best_thr = _recommend_threshold(roc, best_act, rec_tp)
-    plot_q2c_roc(roc, rec_tp, best_act, tanh_lr, logistic_lr)
+    plot_q2c_roc(roc, rec_tp, best_act)
     plot_q2c_umbral(roc, best_act, rec_tp, best_thr)
     plot_q2c_confusion_tabla(split, roc, best_act, best_lr, rec_tp, best_thr)
     _print_q2c(split, roc, best_act, best_lr, rec_tp, best_thr)
