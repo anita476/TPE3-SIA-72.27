@@ -34,6 +34,7 @@ RESULTS = ROOT / "results"
 DEFAULT_CONFIG = ROOT / "configs" / "lr_exploration_tanh_logistic.json"
 DEFAULT_SUMMARY = RESULTS / "linear_vs_nonlinear_summary.csv"
 DEFAULT_CURVES = RESULTS / "linear_vs_nonlinear_curves.csv"
+DEFAULT_ROC = RESULTS / "linear_vs_nonlinear_roc.csv"
 
 COLORS_ACT = {"tanh": "#27ae60", "logistic": "#8e44ad"}
 LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logística"}
@@ -108,6 +109,61 @@ def _std0(s: pd.Series) -> float:
     return float(s.std(ddof=0))
 
 
+def _pr_auc_from_curve(recall: np.ndarray, precision: np.ndarray) -> float:
+    r = np.asarray(recall, dtype=float)
+    p = np.asarray(precision, dtype=float)
+    mask = np.isfinite(r) & np.isfinite(p)
+    r = r[mask]
+    p = p[mask]
+    if r.size < 2:
+        return float("nan")
+    order = np.argsort(r, kind="stable")
+    r = r[order]
+    p = p[order]
+    _, idx = np.unique(r, return_index=True)
+    r = r[idx]
+    p = p[idx]
+    if r.size < 2:
+        return float("nan")
+    return float(np.trapezoid(p, r))
+
+
+def _pr_auc_seed_table(
+    roc_df: pd.DataFrame,
+    test_per: float | None,
+) -> pd.DataFrame:
+    """PR-AUC per (activation, lr, seed) from precision/recall curves."""
+    if roc_df.empty:
+        return pd.DataFrame(columns=["activation", "lr", "seed", "pr_auc"])
+
+    work = roc_df.copy()
+    if "activation" in work.columns:
+        work["activation"] = work["activation"].map(_norm_act)
+    work = work[
+        (work["model_type"].astype(str) == "non-linear")
+        & work["activation"].isin(["tanh", "logistic"])
+    ]
+    if "no_split" in work.columns:
+        ns = work["no_split"].map(_is_no_split)
+        work = work[ns] if test_per is None else work[~ns]
+    if test_per is not None and "test_per" in work.columns:
+        work = work[np.isclose(work["test_per"].astype(float), test_per, rtol=0, atol=1e-9)]
+    if work.empty:
+        return pd.DataFrame(columns=["activation", "lr", "seed", "pr_auc"])
+
+    rows: list[dict] = []
+    for (act, lr, seed), grp in work.groupby(["activation", "lr", "seed"], sort=False):
+        auc_pr = _pr_auc_from_curve(
+            grp["recall"].to_numpy(float),
+            grp["precision"].to_numpy(float),
+        )
+        if np.isfinite(auc_pr):
+            rows.append(
+                {"activation": act, "lr": float(lr), "seed": int(seed), "pr_auc": auc_pr}
+            )
+    return pd.DataFrame(rows)
+
+
 def _curves_mean_std_by_epoch(work: pd.DataFrame) -> pd.DataFrame:
     """Mean/std over seeds by (activation, lr, epoch), matching underfitting plotter std convention.
 
@@ -138,15 +194,15 @@ def _load(summary_path: Path, test_per: float | None) -> pd.DataFrame:
     return df
 
 
-def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
+def _aggregate(df: pd.DataFrame, pr_auc_seed: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per (activation, lr): mean+std over seeds for all key metrics."""
     # Compute gen gap per row first
     df = df.copy()
-    df["gen_gap"] = df["train_roc_auc"] - df["roc_auc"]
+    df["gen_gap"] = df["train_f1_at_threshold"] - df["f1_at_threshold"]
 
     cols = [
-        "roc_auc", "best_f1", "best_recall", "best_precision",
-        "train_roc_auc", "final_train_mse", "gen_gap",
+        "best_f1", "best_recall", "best_precision",
+        "final_train_mse", "gen_gap",
         "recall_at_threshold", "precision_at_threshold",
         "f1_at_threshold", "fpr_at_threshold",
     ]
@@ -158,6 +214,15 @@ def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
         agg_kw[f"{c}_std"]  = (c, _std0)
 
     out = df.groupby(["activation", "lr"], sort=False).agg(**agg_kw).reset_index()
+
+    if pr_auc_seed is not None and not pr_auc_seed.empty:
+        pr = (
+            pr_auc_seed.groupby(["activation", "lr"], sort=False)["pr_auc"]
+            .agg(pr_auc_mean="mean", pr_auc_std=_std0)
+            .reset_index()
+        )
+        out = out.merge(pr, on=["activation", "lr"], how="left")
+
     for c in out.columns:
         if c.endswith("_std"):
             out[c] = out[c].fillna(0.0)
@@ -187,29 +252,37 @@ def _epochs_to_fraction(
     return int(hit[0] + 1)
 
 
-def _best_lr(agg: pd.DataFrame, act: str) -> float | None:
-    """Return the best LR for `act` by argmax mean ROC-AUC.
+def _best_lr(agg: pd.DataFrame, act: str, converge_tol: float = 0.02) -> float | None:
+    """Return the best LR for `act`.
 
-    Among LRs within 0.1 std of the maximum (near-ties caused by noise),
-    prefer the one with the smallest generalization gap (train_auc - test_auc).
-    This avoids picking boundary points where early stopping inflates AUC.
-    Falls back to lowest LR if gen_gap is unavailable.
+    Two-stage selection:
+      1. Convergence gate — keep only LRs whose mean final train MSE is within
+         `converge_tol` (2 %) of the minimum.  Filters out LRs that are too low
+         (model not trained enough) or too high (oscillating / diverging).
+      2. Among converged LRs, pick the one with the highest mean test F1
+         (best_f1_mean) — the primary deployment metric.
+
+    Falls back to argmax best_f1 if train MSE data is unavailable.
     """
-    sub = agg[agg["activation"] == act].dropna(subset=["roc_auc_mean"])
-    if sub.empty:
-        return None
-    mx    = sub["roc_auc_mean"].max()
-    # tight tolerance: only consider LRs statistically indistinguishable from max
-    if "roc_auc_std" in sub.columns:
-        raw = float(sub["roc_auc_std"].mean()) * 0.1
-        noise = raw if np.isfinite(raw) else 1e-5
-    else:
-        noise = 1e-5
-    noise = max(noise, 1e-5)
-    plateau = sub[sub["roc_auc_mean"] >= mx - noise]
-    if "gen_gap_mean" in plateau.columns:
-        return float(plateau.loc[plateau["gen_gap_mean"].idxmin(), "lr"])
-    return float(plateau.sort_values("lr").iloc[0]["lr"])
+    sub = agg[agg["activation"] == act]
+
+    if "final_train_mse_mean" in sub.columns and "best_f1_mean" in sub.columns:
+        mse_sub = sub.dropna(subset=["final_train_mse_mean"])
+        if not mse_sub.empty:
+            min_mse = float(mse_sub["final_train_mse_mean"].min())
+            converged = mse_sub[mse_sub["final_train_mse_mean"] <= min_mse * (1 + converge_tol)]
+            if converged.empty:
+                converged = mse_sub
+            f1_sub = converged.dropna(subset=["best_f1_mean"])
+            if not f1_sub.empty:
+                return float(f1_sub.loc[f1_sub["best_f1_mean"].idxmax(), "lr"])
+            return float(converged.loc[converged["final_train_mse_mean"].idxmin(), "lr"])
+
+    # fallback: argmax best F1
+    f1_sub = sub.dropna(subset=["best_f1_mean"])
+    if not f1_sub.empty:
+        return float(f1_sub.loc[f1_sub["best_f1_mean"].idxmax(), "lr"])
+    return None
 
 
 def _best_lr_train_from_agg(agg: pd.DataFrame, act: str) -> float | None:
@@ -302,22 +375,20 @@ def _plot_sweep_panel(
 
 def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: int) -> None:
     panels = [
-        ("roc_auc_mean",  "roc_auc_std",  "ROC-AUC (test)",          "ROC-AUC en test",             False, False),
-        ("best_f1_mean",  "best_f1_std",  "F1 optimo (test)",         "F1 optimo en test",            False, False),
-        ("gen_gap_mean",  "gen_gap_std",  "Brecha de generalizacion", "Brecha (AUC train - AUC test)", False, True),
+        ("best_recall_mean", "best_recall_std", "Recall optimo (test)",      "Recall optimo en test",          False, False),
+        ("best_f1_mean",     "best_f1_std",     "F1 optimo (test)",          "F1 optimo en test",              False, False),
+        ("gen_gap_mean",     "gen_gap_std",     "Brecha de generalizacion",  "Brecha (F1 train - F1 test)",    False, False),
     ]
 
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, 3, figsize=(FIG_SIZE[0] * 1.2, FIG_SIZE[1] * 0.82))
 
-        # Add y=0 reference line to gen gap panel BEFORE drawing legends
-        axes[2].axhline(0, color="#7f8c8d", linestyle=":", linewidth=1.2,
-                        label="Sin sobreajuste")
-
         for ax, (mc, sc, ylabel, title, log_y, minimize) in zip(axes, panels):
             _plot_sweep_panel(ax, agg, mc, sc, ylabel, title, best_lrs,
                               log_y=log_y, minimize=minimize)
-            ax.legend(fontsize=8, loc="best")
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize=8, loc="best")
 
         # Shared best-LR legend entries
         present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
@@ -349,11 +420,11 @@ def plot_comparacion(
 ) -> None:
     present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
 
-    # Metrics to compare (label, mean_col, std_col, higher_is_better)
+    # (label, mean_col, std_col, higher_is_better)
     metric_defs = [
-        ("ROC-AUC (test)",   "roc_auc_mean",     "roc_auc_std",     True),
-        ("F1 optimo",        "best_f1_mean",      "best_f1_std",     True),
-        ("Recall optimo",    "best_recall_mean",  "best_recall_std", True),
+        ("Recall óptimo",   "best_recall_mean",         "best_recall_std",         True),
+        ("F1 óptimo",       "best_f1_mean",             "best_f1_std",             True),
+        ("Especificidad",   "fpr_at_threshold_mean",    "fpr_at_threshold_std",    False),  # shown as 1-FPR
     ]
     # keep only metrics present in agg
     metric_defs = [(lbl, mc, sc, hib) for lbl, mc, sc, hib in metric_defs if mc in agg.columns]
@@ -426,13 +497,17 @@ def plot_comparacion(
         # Winner annotation box
         if len(present) == 2 and all(a in vals for a in present):
             a0, a1 = present
-            auc0 = vals[a0].get("ROC-AUC (test)", (0, 0))[0]
-            auc1 = vals[a1].get("ROC-AUC (test)", (0, 0))[0]
-            winner_act = a0 if auc0 >= auc1 else a1
-            winner_lr  = best_lrs[winner_act]
-            winner_auc = max(auc0, auc1)
+            r0 = vals[a0].get("Recall óptimo", (0, 0))[0]
+            r1 = vals[a1].get("Recall óptimo", (0, 0))[0]
+            winner_act = a0 if r0 >= r1 else a1
+            winner_metric = max(r0, r1)
+            metric_line = f"Recall óptimo = {winner_metric:.4f}"
+            winner_lr = best_lrs[winner_act]
+            f1_val = vals[winner_act].get("F1 óptimo", (0, 0))[0]
             ax.text(0.98, 0.02,
-                    f"Mejor modelo:\n{LABEL_ACT[winner_act]} (lr={winner_lr:g})\nAUC = {winner_auc:.4f}",
+                    f"Mejor modelo:\n{LABEL_ACT[winner_act]} (lr={winner_lr:g})"
+                    f"\n{metric_line}"
+                    f"\nF1 óptimo = {f1_val:.4f}",
                     transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5,
                     fontweight="bold", color=COLORS_ACT[winner_act],
                     bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
@@ -756,18 +831,16 @@ def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None], criteri
         row = agg[(agg["activation"] == act) & np.isclose(agg["lr"].astype(float), lr, atol=1e-11)]
         if row.empty:
             continue
-        m = float(row["roc_auc_mean"].iloc[0])
-        s = float(row["roc_auc_std"].iloc[0])
-        print(f"  {LABEL_ACT[act]:12s}: lr = {lr:g}   (AUC = {m:.4f} +- {s:.4f})")
+        mse_m = float(row["final_train_mse_mean"].iloc[0]) if "final_train_mse_mean" in row.columns else float("nan")
+        rec_m = float(row["best_recall_mean"].iloc[0]) if "best_recall_mean" in row.columns else float("nan")
+        f1_m  = float(row["best_f1_mean"].iloc[0])    if "best_f1_mean"  in row.columns else float("nan")
+        print(f"  {LABEL_ACT[act]:12s}: lr = {lr:g}   (train_mse={mse_m:.6f}  recall={rec_m:.4f}  F1={f1_m:.4f})")
 
     print("\n--- Comparacion directa al mejor LR ---")
     metric_defs = [
-        ("ROC-AUC (test)",   "roc_auc_mean",              "roc_auc_std",              True),
-        ("F1 optimo",        "best_f1_mean",              "best_f1_std",              True),
-        ("Recall optimo",    "best_recall_mean",          "best_recall_std",          True),
-        ("Precision optima", "best_precision_mean",       "best_precision_std",       True),
-        ("Recall@umbral",    "recall_at_threshold_mean",  "recall_at_threshold_std",  True),
-        ("FPR@umbral",       "fpr_at_threshold_mean",     "fpr_at_threshold_std",     False),
+        ("Recall optimo",  "best_recall_mean",         "best_recall_std",         True),
+        ("F1 optimo",      "best_f1_mean",             "best_f1_std",             True),
+        ("FPR@umbral",     "fpr_at_threshold_mean",    "fpr_at_threshold_std",    False),
     ]
     metric_defs = [(l, mc, sc, h) for l, mc, sc, h in metric_defs if mc in agg.columns]
 
@@ -811,9 +884,29 @@ def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None], criteri
         print(line)
 
     if len(present) == 2:
-        overall = max(winner_counts, key=winner_counts.get)
-        lr_best = best_lrs.get(overall)
-        print(f"\n  Veredicto: {LABEL_ACT[overall]} (lr={lr_best:g}) gana en {winner_counts[overall]}/{len(metric_defs)} metricas")
+        a0, a1 = present
+        r = {}
+        for a in present:
+            lr = best_lrs.get(a)
+            if lr is None:
+                continue
+            row = agg[(agg["activation"] == a) & np.isclose(agg["lr"].astype(float), lr, atol=1e-11)]
+            if not row.empty and "best_recall_mean" in row.columns:
+                r[a] = float(row["best_recall_mean"].iloc[0])
+        deploy_winner = None
+        if len(r) == 2:
+            deploy_winner = max(r, key=r.get) if abs(r[a0] - r[a1]) > 1e-4 else None
+
+        if deploy_winner:
+            lr_best = best_lrs.get(deploy_winner)
+            print(f"\n  Veredicto: {LABEL_ACT[deploy_winner]} (lr={lr_best:g})"
+                  f" — mayor Recall optimo")
+        else:
+            overall = max(winner_counts, key=winner_counts.get)
+            lr_best = best_lrs.get(overall)
+            print(f"\n  Veredicto: {LABEL_ACT[overall]} (lr={lr_best:g})"
+                  f" gana en {winner_counts[overall]}/{len(metric_defs)} metricas"
+                  f" (modelos practicamente equivalentes)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -828,6 +921,8 @@ def parse_args() -> argparse.Namespace:
                    help=f"Summary CSV (default: {DEFAULT_SUMMARY.name})")
     p.add_argument("--curves", type=Path, default=DEFAULT_CURVES,
                    help=f"Curves CSV (default: {DEFAULT_CURVES.name})")
+    p.add_argument("--roc", type=Path, default=DEFAULT_ROC,
+                   help=f"ROC/PR points CSV (default: {DEFAULT_ROC.name})")
     return p.parse_args()
 
 
@@ -856,6 +951,7 @@ def main() -> None:
     if not summary_path.is_file():
         raise SystemExit(f"Summary no encontrado: {summary_path}")
     curves_path = args.curves.resolve()
+    roc_path = args.roc.resolve()
 
     print(f"Config: {cfg_path.name}  |  test_per={test_per}  |  umbral={thr}")
 
@@ -867,15 +963,18 @@ def main() -> None:
     n_seeds = df["seed"].nunique()
     print(f"Activaciones: {present}  |  LRs por activacion: {df.groupby('activation')['lr'].nunique().to_dict()}  |  Semillas: {n_seeds}")
 
-    agg = _aggregate(df)
-    criterion_label = "ROC-AUC test"
+    pr_seed = pd.DataFrame(columns=["activation", "lr", "seed", "pr_auc"])
+    if roc_path.is_file():
+        roc_df = pd.read_csv(roc_path)
+        pr_seed = _pr_auc_seed_table(roc_df, test_per=test_per)
+    agg = _aggregate(df, pr_auc_seed=pr_seed)
+    criterion_label = "mejor F1 optimo en test entre LRs convergidos (MSE ≤ min+2%)"
     best_lrs: dict[str, float | None] = {"tanh": None, "logistic": None}
     curves_df: pd.DataFrame | None = None
     if curves_path.is_file():
         curves_df = pd.read_csv(curves_path)
 
     if test_per is None:
-        criterion_label = "Last MSE en train (min)"
         for act in ("tanh", "logistic"):
             lr = None
             if curves_df is not None:

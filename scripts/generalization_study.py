@@ -3,8 +3,8 @@ generalization_study.py — Estudio de generalización (Q2a / Q2b / Q2c)
 
 Genera 8 figuras respondiendo las tres preguntas del trabajo:
   Q2a (3 figs): distribución de clases, métricas vs baseline, curva PR
-  Q2b (2 figs): AUC vs porcentaje de test, boxplots de AUC por porcentaje de test
-  Q2c (3 figs): curva ROC, P/R/F1 vs umbral, matriz de confusión + tabla de métricas
+  Q2b (2 figs): PR-AUC vs porcentaje de test, boxplots de PR-AUC por porcentaje de test
+  Q2c (3 figs): curva ROC (diagnóstica), P/R/F1 vs umbral, matriz de confusión + tabla de métricas
 
 Uso:
     python scripts/generalization_study.py [--config configs/experiments_generalization.json]
@@ -77,6 +77,43 @@ def _q2c_roc_title(present_acts: list[str]) -> str:
     return "Curva ROC — comparación de activaciones"
 
 
+def _pr_auc_from_curve(recall: np.ndarray, precision: np.ndarray) -> float:
+    """AUC-PR robusta: ordena por recall y deduplica recalls repetidos."""
+    r = np.asarray(recall, dtype=float)
+    p = np.asarray(precision, dtype=float)
+    mask = np.isfinite(r) & np.isfinite(p)
+    r = r[mask]
+    p = p[mask]
+    if r.size < 2:
+        return float("nan")
+    order = np.argsort(r, kind="stable")
+    r = r[order]
+    p = p[order]
+    _, idx = np.unique(r, return_index=True)
+    r = r[idx]
+    p = p[idx]
+    if r.size < 2:
+        return float("nan")
+    return float(np.trapezoid(p, r))
+
+
+def _pr_auc_by_seed(roc_rows: pd.DataFrame) -> pd.DataFrame:
+    """Calcula PR-AUC por (activation, test_per, seed) desde precision/recall."""
+    if roc_rows.empty:
+        return pd.DataFrame(columns=["activation", "test_per", "seed", "pr_auc"])
+    out_rows: list[dict] = []
+    for (act, tp, seed), grp in roc_rows.groupby(["activation", "test_per", "seed"], sort=False):
+        auc_pr = _pr_auc_from_curve(
+            grp["recall"].to_numpy(float),
+            grp["precision"].to_numpy(float),
+        )
+        if np.isfinite(auc_pr):
+            out_rows.append(
+                {"activation": act, "test_per": float(tp), "seed": int(seed), "pr_auc": auc_pr}
+            )
+    return pd.DataFrame(out_rows)
+
+
 def _apply_style(fig: plt.Figure, *axes: plt.Axes) -> None:
     fig.patch.set_facecolor(STYLE["figure_bg"])
     for ax in axes:
@@ -112,10 +149,16 @@ def _load(
     """Carga y filtra summary + roc.
     Retorna (summary_all, split_df, nosplit_df, roc_df).
     split_df   → no_split=False (train/test split runs)
-    nosplit_df → no_split=True  (full-dataset runs, in-sample AUC)
+    nosplit_df → no_split=True  (full-dataset runs)
     """
-    summary = pd.read_csv(RESULTS / "linear_vs_nonlinear_summary.csv")
-    roc_df  = pd.read_csv(RESULTS / "linear_vs_nonlinear_roc.csv")
+    summary_path = RESULTS / "linear_vs_nonlinear_summary.csv"
+    roc_path = RESULTS / "linear_vs_nonlinear_roc.csv"
+    if not summary_path.is_file():
+        raise SystemExit(f"Summary no encontrado: {summary_path}")
+    if not roc_path.is_file():
+        raise SystemExit(f"ROC no encontrado: {roc_path}")
+    summary = pd.read_csv(summary_path)
+    roc_df  = pd.read_csv(roc_path)
 
     summary["activation"] = summary["activation"].map(_norm_act)
     roc_df["activation"]  = roc_df["activation"].map(_norm_act)
@@ -200,10 +243,10 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
     baseline_acc = 1.0 - fraud_rate
 
     metrics = [
-        ("test_acc",             "Accuracy"),
-        ("roc_auc",              "ROC-AUC"),
-        ("best_f1",              "F1 (opt.)"),
-        ("best_recall",          "Recall (opt.)"),
+        ("test_acc",       "Accuracy"),
+        ("best_precision", "Precisión (opt.)"),
+        ("best_recall",    "Recall (opt.)"),
+        ("best_f1",        "F1 (opt.)"),
     ]
     activations = _present_binary_activations(sub)
     if not activations:
@@ -294,7 +337,7 @@ def plot_q2a_pr_curve(roc: pd.DataFrame, test_per: float) -> None:
             std  = mat.std(0)
             auc_pr = float(np.trapezoid(mean, recall_grid))
             ax.plot(recall_grid, mean, color=COLORS_ACT[act], linewidth=2,
-                    label=f"{LABEL_ACT[act]} (AUC-PR = {auc_pr:.3f})")
+                    label=f"{LABEL_ACT[act]} (área = {auc_pr:.3f})")
             ax.fill_between(recall_grid, np.maximum(mean - std, 0), mean + std,
                             color=COLORS_ACT[act], alpha=0.18, linewidth=0)
 
@@ -330,57 +373,78 @@ def plot_q2a_pr_curve(roc: pd.DataFrame, test_per: float) -> None:
 # Q2b — Generalización
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _recommend_test_per(split: pd.DataFrame, gain_threshold: float = 0.002) -> float:
-    """Devuelve el test_per recomendado.
+_MAX_REC_TEST_PER = 0.30   # never recommend using less than 70 % for training
 
-    Recorre de mayor a menor test_per (de menos a más datos de entrenamiento).
-    Cuando la ganancia en AUC al pasar al siguiente paso es menor que
-    `gain_threshold`, el paso anterior ya es suficiente — no hace falta más datos.
-    Devuelve el test_per en ese punto de inflexión.
+
+def _recommend_test_per(
+    split: pd.DataFrame,
+    gain_threshold: float = 0.010,
+    std_target: float = 0.016,
+) -> float:
+    """Devuelve el test_per recomendado (máximo _MAX_REC_TEST_PER).
+
+    Usa best_f1 (umbral óptimo por semilla) para medir rendimiento.
+    Si la curva es plana (rango < gain_threshold), recomienda el menor test_per
+    cuyo std cae por debajo de std_target — estabilidad de estimación.
+    Si la curva no es plana, recomienda el punto anterior a la primera caída
+    significativa (> gain_threshold).
+    Siempre acotado por _MAX_REC_TEST_PER.
     """
-    tp_vals = sorted(split["test_per"].dropna().unique(), reverse=True)  # high → low
+    tp_vals = sorted(split["test_per"].dropna().unique())  # low → high
 
     if len(tp_vals) <= 1:
         return float(tp_vals[0]) if tp_vals else 0.20
 
     auc_per_tp: dict[float, float] = {}
+    std_per_tp: dict[float, float] = {}
     for tp in tp_vals:
         rows = split[np.isclose(split["test_per"].astype(float), tp, rtol=0, atol=1e-9)]
-        auc_per_tp[float(tp)] = float(rows["roc_auc"].mean())
+        auc_per_tp[float(tp)] = float(rows["best_f1"].mean())
+        std_per_tp[float(tp)] = float(rows["best_f1"].std(ddof=0))
 
-    # Walk from high test_per (little data) toward low (lots of data).
-    # The first step where the gain from adding more training data drops below
-    # the threshold is where we recommend stopping — the previous (higher) test_per.
-    rec_tp = float(tp_vals[-1])  # default: use most training data
-    for i in range(1, len(tp_vals)):
-        tp_prev = tp_vals[i - 1]   # higher test_per (less training)
-        tp_curr = tp_vals[i]       # lower test_per (more training)
-        gain = auc_per_tp[tp_curr] - auc_per_tp[tp_prev]
-        if gain < gain_threshold:
-            rec_tp = float(tp_prev)  # diminishing returns beyond this point
-            break
+    auc_vals = list(auc_per_tp.values())
+    curve_is_flat = (max(auc_vals) - min(auc_vals)) < gain_threshold
 
-    return rec_tp
+    if curve_is_flat:
+        for tp in tp_vals:
+            if float(tp) > _MAX_REC_TEST_PER:
+                break
+            if std_per_tp[float(tp)] < std_target:
+                return float(tp)
+        candidates = [tp for tp in tp_vals if float(tp) <= _MAX_REC_TEST_PER]
+        return float(max(candidates)) if candidates else float(tp_vals[0])
+    else:
+        rec_tp = float(tp_vals[0])
+        for i in range(1, len(tp_vals)):
+            tp_prev = float(tp_vals[i - 1])
+            tp_curr = float(tp_vals[i])
+            drop = auc_per_tp[tp_prev] - auc_per_tp[tp_curr]
+            if drop > gain_threshold:
+                rec_tp = tp_prev
+                break
+        else:
+            candidates = [tp for tp in tp_vals if float(tp) <= _MAX_REC_TEST_PER]
+            rec_tp = float(max(candidates)) if candidates else float(tp_vals[0])
+        return min(rec_tp, _MAX_REC_TEST_PER)
 
 
 def _agg_by_tp(split: pd.DataFrame, activation: str) -> dict[float, tuple[float, float]]:
-    """Mean ± std AUC per test_per for one activation."""
+    """Mean ± std best_f1 per test_per for one activation."""
     out = {}
     for tp, grp in split[split["activation"] == activation].groupby("test_per"):
-        out[float(tp)] = (float(grp["roc_auc"].mean()), float(grp["roc_auc"].std(ddof=0)))
+        out[float(tp)] = (float(grp["best_f1"].mean()), float(grp["best_f1"].std(ddof=0)))
     return out
 
 
-def plot_q2b_auc_line(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> None:
-    """AUC vs porcentaje de test — líneas con banda de error.
-    Incluye el punto en x=0 (sin particion, AUC en entrenamiento)."""
+def plot_q2b_auc_line(split: pd.DataFrame, rec_tp: float) -> None:
+    """F1 óptimo vs porcentaje de test — líneas con banda de error."""
     present_acts = _present_binary_activations(split)
     markers = {"tanh": "o", "logistic": "s"}
 
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.92, FIG_SIZE[1] * 0.85))
 
-        all_aucs: list[float] = []
+        all_vals: list[float] = []
         for act in present_acts:
             agg = _agg_by_tp(split, act)
             if not agg:
@@ -390,36 +454,21 @@ def plot_q2b_auc_line(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float)
             ms  = np.array([agg[tp][0] for tp in tps])
             ss  = np.array([agg[tp][1] for tp in tps])
 
-            # prepend no-split point at x=0 if available
-            if not nosplit.empty:
-                ns_rows = nosplit[nosplit["activation"] == act]["roc_auc"].dropna()
-                if not ns_rows.empty:
-                    xs = np.concatenate([[0.0], xs])
-                    ms = np.concatenate([[ns_rows.mean()], ms])
-                    ss = np.concatenate([[ns_rows.std(ddof=0)], ss])
-
             ax.plot(xs, ms, color=COLORS_ACT[act], marker=markers[act], markersize=6,
                     linewidth=2, label=LABEL_ACT[act])
             ax.fill_between(xs, np.maximum(ms - ss, 0), ms + ss,
                             color=COLORS_ACT[act], alpha=0.18, linewidth=0)
-            all_aucs.extend(ms.tolist())
-
-        # Mark x=0 region
-        if not nosplit.empty:
-            ax.axvline(0, color="#7f8c8d", linestyle=":", linewidth=1.0, alpha=0.7)
-            ytext = min(all_aucs) if all_aucs else 0.85
-            ax.text(0.4, ytext, "Sin\nparticion", fontsize=7, color="#7f8c8d",
-                    va="bottom", ha="left")
+            all_vals.extend(ms.tolist())
 
         rec_pct = rec_tp * 100
         ax.axvline(rec_pct, color="#e67e22", linestyle="--", linewidth=1.5)
-        if all_aucs:
-            yrange = max(all_aucs) - min(all_aucs)
-            ypos   = min(all_aucs) + yrange * 0.15
+        if all_vals:
+            yrange = max(all_vals) - min(all_vals)
+            ypos   = min(all_vals) + yrange * 0.15
         else:
-            ypos = 0.85
+            ypos = 0.90
         ax.annotate(
-            f"Recomendado:\n{rec_pct:.0f}% test",
+            f"Recomendado:\n{rec_pct:.0f}% test\n(varianza estable)",
             xy=(rec_pct, ypos),
             xytext=(14, 0),
             textcoords="offset points",
@@ -428,28 +477,20 @@ def plot_q2b_auc_line(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float)
         )
 
         ax.set_xlabel("Porcentaje de test (%)")
-        ax.set_ylabel("ROC-AUC")
-        ax.set_title("AUC vs porcentaje de test — media +- std sobre semillas\n"
-                     "(x=0: sin particion, AUC en entrenamiento)")
+        ax.set_ylabel("F1 óptimo (por semilla)")
+        ax.set_title("F1 óptimo vs porcentaje de test — media ± std sobre semillas\n"
+                     "(banda ancha = estimación poco confiable)")
         ax.legend(fontsize=9)
         _apply_style(fig, ax)
         fig.tight_layout()
         _save(fig, "gen_study_q2b_auc_vs_fraccion.png")
 
 
-def plot_q2b_auc_boxplots(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> None:
-    """Boxplots de AUC por porcentaje de test.
-    Incluye columna extra a la izquierda para el caso sin particion (x=0)."""
+def plot_q2b_auc_boxplots(split: pd.DataFrame, rec_tp: float) -> None:
+    """Boxplots de F1 óptimo por porcentaje de test."""
     tp_vals      = sorted(split["test_per"].dropna().unique())
     present_acts = _present_binary_activations(split)
-    has_nosplit  = not nosplit.empty and any(
-        not nosplit[nosplit["activation"] == a]["roc_auc"].dropna().empty
-        for a in present_acts
-    )
-
-    # Build ordered list: 0 (nosplit) + actual test_per values
-    all_tp   = ([0.0] if has_nosplit else []) + list(tp_vals)
-    x_labels = (["Sin\nparticion"] if has_nosplit else []) + [f"{tp*100:.0f}%" for tp in tp_vals]
+    x_labels     = [f"{tp*100:.0f}%" for tp in tp_vals]
 
     n_acts = len(present_acts)
     width  = 0.32 if n_acts > 1 else 0.5
@@ -458,16 +499,10 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: fl
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 1.05, FIG_SIZE[1] * 0.85))
 
-        for i, tp in enumerate(all_tp):
-            if tp == 0.0:
-                rows = nosplit
-                auc_col = "roc_auc"
-            else:
-                rows    = split[np.isclose(split["test_per"].astype(float), tp, rtol=0, atol=1e-9)]
-                auc_col = "roc_auc"
-
+        for i, tp in enumerate(tp_vals):
+            rows = split[np.isclose(split["test_per"].astype(float), tp, rtol=0, atol=1e-9)]
             for j, act in enumerate(present_acts):
-                vals = rows[rows["activation"] == act][auc_col].dropna().values
+                vals = rows[rows["activation"] == act]["best_f1"].dropna().values
                 if len(vals) == 0:
                     continue
                 pos = i + (j - 0.5) * (width + gap / 2) if n_acts > 1 else i
@@ -480,38 +515,25 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: fl
                     whiskerprops=dict(color=COLORS_ACT[act], linewidth=1.2),
                     capprops=dict(color=COLORS_ACT[act], linewidth=1.2),
                     flierprops=dict(marker="o", color=COLORS_ACT[act], alpha=0.5, markersize=3.5),
-                    boxprops=dict(facecolor=COLORS_ACT[act],
-                                  alpha=0.35 if tp == 0.0 else 0.55,
-                                  edgecolor=COLORS_ACT[act],
-                                  linestyle="--" if tp == 0.0 else "-"),
+                    boxprops=dict(facecolor=COLORS_ACT[act], alpha=0.55, edgecolor=COLORS_ACT[act]),
                 )
 
-        # Separator line between no-split and split columns
-        if has_nosplit:
-            ax.axvline(0.5, color="#7f8c8d", linestyle=":", linewidth=1.2, alpha=0.6)
-
-        rec_i = next((i for i, tp in enumerate(all_tp) if tp > 0 and np.isclose(tp, rec_tp, atol=1e-9)), None)
+        rec_i = next((i for i, tp in enumerate(tp_vals) if np.isclose(float(tp), rec_tp, atol=1e-9)), None)
         if rec_i is not None:
             ax.axvline(rec_i, color="#e67e22", linestyle="--", linewidth=1.5,
                        label=f"Recomendado: {rec_tp*100:.0f}% test")
 
-        ax.set_xticks(range(len(all_tp)))
+        ax.set_xticks(range(len(tp_vals)))
         ax.set_xticklabels(x_labels, fontsize=8.5)
         ax.set_xlabel("Porcentaje de test (%)")
-        ax.set_ylabel("ROC-AUC")
-        ax.set_title("Distribucion de AUC — sin particion vs distintos porcentajes de test\n"
-                     "(caja punteada = AUC en entrenamiento, sin particion)")
+        ax.set_ylabel("F1 óptimo (por semilla)")
+        ax.set_title("Distribución de F1 óptimo vs porcentaje de test\n"
+                     "(cajas más anchas = más incertidumbre)")
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[act], alpha=0.7, label=LABEL_ACT[act])
             for act in present_acts
         ]
-        if has_nosplit:
-            legend_handles.append(
-                mpatches.Patch(facecolor="#aaaaaa", alpha=0.4,
-                               label="Sin particion (AUC entrenamiento)",
-                               linestyle="--", edgecolor="#555555")
-            )
         if rec_i is not None:
             legend_handles.append(
                 plt.Line2D([0], [0], color="#e67e22", linestyle="--",
@@ -523,25 +545,19 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: fl
         _save(fig, "gen_study_q2b_auc_boxplots.png")
 
 
-def _print_q2b(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> None:
+def _print_q2b(split: pd.DataFrame, rec_tp: float) -> None:
     n_seeds = split["seed"].nunique()
     print("\n-- Q2b ----------------------------------------------------")
     print(f"Estrategia: particion estratificada por clase, repetida sobre {n_seeds} semillas.")
-    if not nosplit.empty:
-        print("  Caso sin particion incluido (AUC en entrenamiento, cota superior).")
-        for act in _present_binary_activations(nosplit):
-            rows = nosplit[nosplit["activation"] == act]["roc_auc"].dropna()
-            if not rows.empty:
-                print(f"  Sin particion {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
-    print(f"Porcentaje de test recomendado: {rec_tp*100:.0f}% (test_per = {rec_tp})")
+    print(f"Porcentaje de test recomendado: {rec_tp*100:.0f}% (varianza estable, max training)")
     for act in _present_binary_activations(split):
         rows = split[
             (split["activation"] == act) &
             np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
-        ]["roc_auc"]
+        ]["best_f1"]
         if rows.empty:
             continue
-        print(f"  {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
+        print(f"  {LABEL_ACT[act]:10s} F1 opt = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -554,14 +570,14 @@ def _best_activation(
 ) -> tuple[str, float]:
     sub_tp = split[np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)]
     acts_here = [a for a in ("tanh", "logistic") if a in sub_tp["activation"].values]
-    best_act, best_auc = None, -1.0
+    best_act, best_val = None, -1.0
     for act in acts_here:
         rows = sub_tp[sub_tp["activation"] == act]
         if rows.empty:
             continue
-        m = float(rows["roc_auc"].mean())
-        if m > best_auc:
-            best_auc = m
+        m = float(rows["best_f1"].mean())
+        if m > best_val:
+            best_val = m
             best_act = act
     if best_act is None:
         raise SystemExit("No se encontro ninguna activacion valida en los datos.")
@@ -570,29 +586,6 @@ def _best_activation(
         split[split["activation"] == best_act]["lr"].iloc[0]
     )
     return best_act, best_lr
-
-
-def _interp_roc_curves(roc: pd.DataFrame, activation: str, rec_tp: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Interpolate ROC (FPR→TPR) over seeds, return (fpr_grid, mean_tpr, std_tpr)."""
-    rows = roc[
-        (roc["activation"] == activation) &
-        np.isclose(roc["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
-    ]
-    fpr_grid = np.linspace(0, 1, 200)
-    tprs: list[np.ndarray] = []
-    for _, grp in rows.groupby("seed"):
-        g = grp.sort_values("fpr")
-        f = g["fpr"].values
-        t = g["tpr"].values
-        _, idx = np.unique(f, return_index=True)
-        f, t = f[idx], t[idx]
-        if len(f) < 2:
-            continue
-        tprs.append(np.interp(fpr_grid, f, t, left=0.0, right=1.0))
-    if not tprs:
-        return fpr_grid, np.zeros(200), np.zeros(200)
-    mat = np.stack(tprs)
-    return fpr_grid, mat.mean(0), mat.std(0)
 
 
 def _recommend_threshold(roc: pd.DataFrame, best_act: str, rec_tp: float) -> float:
@@ -620,41 +613,56 @@ def _recommend_threshold(roc: pd.DataFrame, best_act: str, rec_tp: float) -> flo
     return float(thr_grid[np.argmax(mean_f1)])
 
 
-def plot_q2c_roc(roc: pd.DataFrame, rec_tp: float, best_act: str) -> None:
-    roc_tp = roc[np.isclose(roc["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)]
-    present_acts = _present_binary_activations(roc_tp)
-    if not present_acts:
-        print(f"  [Q2c-roc] Sin filas ROC para test_per={rec_tp} (revisar results).")
+def plot_q2c_metrics_bar(
+    split: pd.DataFrame, best_act: str, rec_tp: float,
+) -> None:
+    """Bar chart: precision, recall, F1, accuracy at optimal threshold vs trivial baseline."""
+    rows = split[
+        (split["activation"] == best_act) &
+        np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
+    ]
+    if rows.empty:
+        print("  [Q2c-metricas] Sin datos.")
         return
 
+    fraud_rate  = float(rows["fraud_rate_test"].mean())
+    trivial_acc = 1.0 - fraud_rate
+
+    metric_defs = [
+        ("F1 (óptimo)",        "best_f1",        True),
+        ("Recall (óptimo)",    "best_recall",     True),
+        ("Precisión (óptima)", "best_precision",  True),
+        ("Accuracy",           "test_acc",        False),
+    ]
+
+    vals  = [float(rows[col].mean()) for _, col, _ in metric_defs]
+    errs  = [float(rows[col].std(ddof=0)) for _, col, _ in metric_defs]
+    labels = [lbl for lbl, _, _ in metric_defs]
+    ys = np.arange(len(metric_defs))
+
     with plt.rc_context(PLOT_RC):
-        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.78, FIG_SIZE[1] * 0.88))
+        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.72, FIG_SIZE[1] * 0.72))
 
-        ax.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.5, label="Azar (AUC = 0.500)")
+        ax.barh(ys, vals, xerr=errs, color=COLORS_ACT[best_act], alpha=0.75,
+                height=0.5, capsize=4,
+                error_kw=dict(linewidth=1.2, ecolor="#444444"))
 
-        for act in present_acts:
-            fpr_g, mean_tpr, std_tpr = _interp_roc_curves(roc, act, rec_tp)
-            auc_val = float(np.trapezoid(mean_tpr, fpr_g))
-            is_best  = act == best_act
-            ls  = "-" if is_best else "--"
-            lw  = 2.2 if is_best else 1.4
-            alpha_fill = 0.12 if is_best else 0
-            label = f"{LABEL_ACT[act]} — AUC = {auc_val:.3f}"
-            if is_best:
-                label += " [mejor]"
-            ax.plot(fpr_g, mean_tpr, color=COLORS_ACT[act], linestyle=ls,
-                    linewidth=lw, label=label)
-            if is_best:
-                ax.fill_between(fpr_g, 0, mean_tpr, color=COLORS_ACT[act], alpha=alpha_fill)
+        ax.axvline(trivial_acc, color="#e67e22", linestyle="--", linewidth=1.4,
+                   label=f"Clasificador trivial — accuracy = {trivial_acc*100:.1f}%")
 
-        ax.set_xlabel("Tasa de falsos positivos (FPR)")
-        ax.set_ylabel("Tasa de verdaderos positivos (Recall)")
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1.02)
-        ax.set_title(_q2c_roc_title(present_acts))
+        for i, (val, err) in enumerate(zip(vals, errs)):
+            ax.text(val + err + 0.008, i, f"{val:.3f}",
+                    va="center", fontsize=9, color=STYLE["text_title"])
+
+        ax.set_yticks(ys)
+        ax.set_yticklabels(labels)
+        ax.set_xlim(0, 1.12)
+        ax.set_xlabel("Valor de métrica")
+        ax.set_title(f"Métricas del modelo final — {LABEL_ACT[best_act]} (umbral óptimo F1)")
         ax.legend(fontsize=9, loc="lower right")
         _apply_style(fig, ax)
         fig.tight_layout()
-        _save(fig, "gen_study_q2c_roc.png")
+        _save(fig, "gen_study_q2c_metricas.png")
 
 
 def plot_q2c_umbral(roc: pd.DataFrame, best_act: str, rec_tp: float, best_thr: float) -> None:
@@ -730,11 +738,9 @@ def plot_q2c_confusion_tabla(
     # the confusion matrix numbers are consistent with the best_thr annotation.
     recall_thr = float(rows["best_recall"].mean())
     prec_thr   = float(rows["best_precision"].mean())
-    roc_auc_m  = float(rows["roc_auc"].mean())
-    roc_auc_s  = float(rows["roc_auc"].std(ddof=0))
     f1_m       = float(rows["best_f1"].mean())
     f1_s       = float(rows["best_f1"].std(ddof=0))
-    fpr_thr    = float(rows["fpr_at_threshold"].mean())
+    acc_m      = float(rows["test_acc"].mean())
 
     P  = round(n_test * fraud_rate)
     TP = round(recall_thr * P)
@@ -773,15 +779,15 @@ def plot_q2c_confusion_tabla(
         # — Metrics table —
         ax_tbl.axis("off")
         table_data = [
-            ("Modelo",           LABEL_ACT[best_act]),
-            ("Learning rate",    f"{best_lr:g}"),
-            ("ROC-AUC (media)",  f"{roc_auc_m:.4f} ± {roc_auc_s:.4f}"),
-            ("F1 óptimo (media)",f"{f1_m:.4f} ± {f1_s:.4f}"),
+            ("Modelo",              LABEL_ACT[best_act]),
+            ("Learning rate",       f"{best_lr:g}"),
+            ("F1 óptimo (media)",   f"{f1_m:.4f} ± {f1_s:.4f}"),
             ("Precisión (F1-ópt.)", f"{prec_thr:.4f}"),
-            ("Recall (F1-ópt.)",   f"{recall_thr:.4f}"),
-            ("Umbral recomendado", f"{best_thr:.3f}"),
-            ("Tasa de fraude",     f"{fraud_rate * 100:.1f}%"),
-            ("Muestras test",      f"{int(n_test):,}"),
+            ("Recall (F1-ópt.)",    f"{recall_thr:.4f}"),
+            ("Accuracy",            f"{acc_m:.4f}"),
+            ("Umbral recomendado",  f"{best_thr:.3f}"),
+            ("Tasa de fraude",      f"{fraud_rate * 100:.1f}%"),
+            ("Muestras test",       f"{int(n_test):,}"),
         ]
         n_rows = len(table_data)
         row_h  = 1.0 / (n_rows + 1)
@@ -824,12 +830,11 @@ def _print_q2c(split: pd.DataFrame, roc: pd.DataFrame,
     print("\n-- Q2c ----------------------------------------------------")
     print(f"Mejor modelo: {LABEL_ACT[best_act]} (lr={best_lr:g})")
     if not rows.empty:
-        print(f"  ROC-AUC  = {rows['roc_auc'].mean():.4f} +- {rows['roc_auc'].std(ddof=0):.4f}")
-        print(f"  F1 opt.  = {rows['best_f1'].mean():.4f} +- {rows['best_f1'].std(ddof=0):.4f}")
-        print(f"  Umbral recomendado: {best_thr:.3f} (maximiza F1)")
-        print(f"  Recall (F1-opt.): {rows['best_recall'].mean() * 100:.1f}%  (fraude detectado)")
-        print(f"  FPR @ umbral fijo (0.5): {rows['fpr_at_threshold'].mean() * 100:.1f}%")
-        print(f"  Precision (F1-opt.): {rows['best_precision'].mean() * 100:.1f}%")
+        print(f"  F1 opt.      = {rows['best_f1'].mean():.4f} +- {rows['best_f1'].std(ddof=0):.4f}")
+        print(f"  Recall opt.  = {rows['best_recall'].mean() * 100:.1f}%  (fraude detectado)")
+        print(f"  Precision opt. = {rows['best_precision'].mean() * 100:.1f}%")
+        print(f"  Accuracy     = {rows['test_acc'].mean():.4f} +- {rows['test_acc'].std(ddof=0):.4f}")
+        print(f"  Umbral recomendado: {best_thr:.3f} (maximiza F1 promediado sobre semillas)")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -897,6 +902,13 @@ def main() -> None:
     if split.empty:
         raise SystemExit("Sin datos tras filtrar. Corre el experiment_runner con este config primero.")
 
+    # Determinar el mejor modelo primero (resuelve issue de umbral: best_thr disponible para todo)
+    rec_tp   = _recommend_test_per(split)
+    best_act, best_lr = _best_activation(split, rec_tp, tanh_lr, logistic_lr)
+    best_thr = _recommend_threshold(roc, best_act, rec_tp)
+    print(f"  Modelo seleccionado: {LABEL_ACT[best_act]} (lr={best_lr:g})  |  "
+          f"rec_tp={rec_tp*100:.0f}%  |  umbral={best_thr:.3f}")
+
     # Q2a
     print("\n[Q2a] Metricas...")
     plot_q2a_distribucion(split, test_per)
@@ -905,16 +917,13 @@ def main() -> None:
 
     # Q2b
     print("\n[Q2b] Generalizacion...")
-    rec_tp = _recommend_test_per(split)
-    plot_q2b_auc_line(split, nosplit, rec_tp)
-    plot_q2b_auc_boxplots(split, nosplit, rec_tp)
-    _print_q2b(split, nosplit, rec_tp)
+    plot_q2b_auc_line(split, rec_tp)
+    plot_q2b_auc_boxplots(split, rec_tp)
+    _print_q2b(split, rec_tp)
 
     # Q2c
     print("\n[Q2c] Mejor modelo...")
-    best_act, best_lr = _best_activation(split, rec_tp, tanh_lr, logistic_lr)
-    best_thr = _recommend_threshold(roc, best_act, rec_tp)
-    plot_q2c_roc(roc, rec_tp, best_act)
+    plot_q2c_metrics_bar(split, best_act, rec_tp)
     plot_q2c_umbral(roc, best_act, rec_tp, best_thr)
     plot_q2c_confusion_tabla(split, roc, best_act, best_lr, rec_tp, best_thr)
     _print_q2c(split, roc, best_act, best_lr, rec_tp, best_thr)
