@@ -330,7 +330,7 @@ def _agg_by_tp(split: pd.DataFrame, activation: str) -> dict[float, tuple[float,
     """Mean ± std AUC per test_per for one activation."""
     out = {}
     for tp, grp in split[split["activation"] == activation].groupby("test_per"):
-        out[float(tp)] = (float(grp["roc_auc"].mean()), float(grp["roc_auc"].std()))
+        out[float(tp)] = (float(grp["roc_auc"].mean()), float(grp["roc_auc"].std(ddof=0)))
     return out
 
 
@@ -359,7 +359,7 @@ def plot_q2b_auc_line(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float)
                 if not ns_rows.empty:
                     xs = np.concatenate([[0.0], xs])
                     ms = np.concatenate([[ns_rows.mean()], ms])
-                    ss = np.concatenate([[ns_rows.std()], ss])
+                    ss = np.concatenate([[ns_rows.std(ddof=0)], ss])
 
             ax.plot(xs, ms, color=COLORS_ACT[act], marker=markers[act], markersize=6,
                     linewidth=2, label=LABEL_ACT[act])
@@ -495,7 +495,7 @@ def _print_q2b(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> Non
         for act in ["tanh", "logistic"]:
             rows = nosplit[nosplit["activation"] == act]["roc_auc"].dropna()
             if not rows.empty:
-                print(f"  Sin particion {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std():.4f}")
+                print(f"  Sin particion {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
     print(f"Porcentaje de test recomendado: {rec_tp*100:.0f}% (test_per = {rec_tp})")
     for act in ["tanh", "logistic"]:
         rows = split[
@@ -504,7 +504,7 @@ def _print_q2b(split: pd.DataFrame, nosplit: pd.DataFrame, rec_tp: float) -> Non
         ]["roc_auc"]
         if rows.empty:
             continue
-        print(f"  {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std():.4f}")
+        print(f"  {LABEL_ACT[act]:10s} AUC = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -685,12 +685,14 @@ def plot_q2c_confusion_tabla(
 
     n_test     = float(rows["n_test"].mean())
     fraud_rate = float(rows["fraud_rate_test"].mean())
-    recall_thr = float(rows["recall_at_threshold"].mean())
-    prec_thr   = float(rows["precision_at_threshold"].mean())
+    # Use the per-seed F1-optimal metrics (best_recall / best_precision) so that
+    # the confusion matrix numbers are consistent with the best_thr annotation.
+    recall_thr = float(rows["best_recall"].mean())
+    prec_thr   = float(rows["best_precision"].mean())
     roc_auc_m  = float(rows["roc_auc"].mean())
-    roc_auc_s  = float(rows["roc_auc"].std())
+    roc_auc_s  = float(rows["roc_auc"].std(ddof=0))
     f1_m       = float(rows["best_f1"].mean())
-    f1_s       = float(rows["best_f1"].std())
+    f1_s       = float(rows["best_f1"].std(ddof=0))
     fpr_thr    = float(rows["fpr_at_threshold"].mean())
 
     P  = round(n_test * fraud_rate)
@@ -734,8 +736,8 @@ def plot_q2c_confusion_tabla(
             ("Learning rate",    f"{best_lr:g}"),
             ("ROC-AUC (media)",  f"{roc_auc_m:.4f} ± {roc_auc_s:.4f}"),
             ("F1 óptimo (media)",f"{f1_m:.4f} ± {f1_s:.4f}"),
-            ("Precisión @ umbral", f"{prec_thr:.4f}"),
-            ("Recall @ umbral",    f"{recall_thr:.4f}"),
+            ("Precisión (F1-ópt.)", f"{prec_thr:.4f}"),
+            ("Recall (F1-ópt.)",   f"{recall_thr:.4f}"),
             ("Umbral recomendado", f"{best_thr:.3f}"),
             ("Tasa de fraude",     f"{fraud_rate * 100:.1f}%"),
             ("Muestras test",      f"{int(n_test):,}"),
@@ -781,11 +783,11 @@ def _print_q2c(split: pd.DataFrame, roc: pd.DataFrame,
     print("\n-- Q2c ----------------------------------------------------")
     print(f"Mejor modelo: {LABEL_ACT[best_act]} (lr={best_lr:g})")
     if not rows.empty:
-        print(f"  ROC-AUC  = {rows['roc_auc'].mean():.4f} +- {rows['roc_auc'].std():.4f}")
-        print(f"  F1 opt.  = {rows['best_f1'].mean():.4f} +- {rows['best_f1'].std():.4f}")
+        print(f"  ROC-AUC  = {rows['roc_auc'].mean():.4f} +- {rows['roc_auc'].std(ddof=0):.4f}")
+        print(f"  F1 opt.  = {rows['best_f1'].mean():.4f} +- {rows['best_f1'].std(ddof=0):.4f}")
         print(f"  Umbral recomendado: {best_thr:.3f} (maximiza F1)")
-        print(f"  Recall @ umbral: {rows['recall_at_threshold'].mean() * 100:.1f}%  (fraude detectado)")
-        print(f"  FPR @ umbral:    {rows['fpr_at_threshold'].mean() * 100:.1f}%  (alarmas falsas)")
+        print(f"  Recall (F1-opt.): {rows['best_recall'].mean() * 100:.1f}%  (fraude detectado)")
+        print(f"  FPR @ umbral fijo: {rows['fpr_at_threshold'].mean() * 100:.1f}%  (alarmas falsas @ thr=0.5)")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

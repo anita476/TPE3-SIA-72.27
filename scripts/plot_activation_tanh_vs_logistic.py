@@ -36,7 +36,7 @@ DEFAULT_SUMMARY = RESULTS / "linear_vs_nonlinear_summary.csv"
 DEFAULT_CURVES = RESULTS / "linear_vs_nonlinear_curves.csv"
 
 COLORS_ACT = {"tanh": "#27ae60", "logistic": "#8e44ad"}
-LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logistica"}
+LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logística"}
 MARKERS    = {"tanh": "o", "logistic": "s"}
 
 
@@ -81,16 +81,60 @@ def _save(fig: plt.Figure, name: str) -> None:
 # Data loading & aggregation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load(summary_path: Path, test_per: float) -> pd.DataFrame:
+def _is_no_split(v: object) -> bool:
+    return str(v).strip().lower() in ("true", "1")
+
+
+def _filter_curves_scope(
+    curves_df: pd.DataFrame,
+    test_per: float | None,
+    activations: list[str] | None = None,
+) -> pd.DataFrame:
+    """Apply the same split/test_per scope filtering used across all curve-based views."""
+    work = curves_df.copy()
+    if "activation" in work.columns:
+        work["activation"] = work["activation"].map(_norm_act)
+    if activations is not None and "activation" in work.columns:
+        work = work[work["activation"].isin(activations)]
+    if "no_split" in work.columns:
+        ns = work["no_split"].map(_is_no_split)
+        work = work[ns] if test_per is None else work[~ns]
+    if test_per is not None and "test_per" in work.columns:
+        work = work[np.isclose(work["test_per"].astype(float), test_per, rtol=0, atol=1e-9)]
+    return work
+
+
+def _std0(s: pd.Series) -> float:
+    return float(s.std(ddof=0))
+
+
+def _curves_mean_std_by_epoch(work: pd.DataFrame) -> pd.DataFrame:
+    """Mean/std over seeds by (activation, lr, epoch), matching underfitting plotter std convention.
+
+    Uses population std (ddof=0), same as comparison_underfitting_plot.py.
+    """
+    grp = (
+        work.groupby(["activation", "lr", "epoch"], sort=False)["train_mse"]
+        .agg(mean="mean", std=_std0)
+        .reset_index()
+    )
+    grp["std"] = grp["std"].fillna(0.0)
+    return grp
+
+
+def _load(summary_path: Path, test_per: float | None) -> pd.DataFrame:
     df = pd.read_csv(summary_path)
     df["activation"] = df["activation"].map(_norm_act)
-    ns = df["no_split"].map(lambda x: str(x).strip().lower() in ("false", "0"))
-    df = df[
+    base_mask = (
         (df["model_type"].astype(str) == "non-linear") &
-        ns &
-        df["activation"].isin(["tanh", "logistic"]) &
-        np.isclose(df["test_per"].astype(float), test_per, rtol=0, atol=1e-9)
-    ].copy()
+        df["activation"].isin(["tanh", "logistic"])
+    )
+    ns = df["no_split"].map(_is_no_split)
+    if test_per is None:
+        scope_mask = ns
+    else:
+        scope_mask = (~ns) & np.isclose(df["test_per"].astype(float), test_per, rtol=0, atol=1e-9)
+    df = df[base_mask & scope_mask].copy()
     return df
 
 
@@ -111,7 +155,7 @@ def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
     agg_kw: dict = {}
     for c in cols:
         agg_kw[f"{c}_mean"] = (c, "mean")
-        agg_kw[f"{c}_std"]  = (c, "std")
+        agg_kw[f"{c}_std"]  = (c, _std0)
 
     out = df.groupby(["activation", "lr"], sort=False).agg(**agg_kw).reset_index()
     for c in out.columns:
@@ -156,12 +200,52 @@ def _best_lr(agg: pd.DataFrame, act: str) -> float | None:
         return None
     mx    = sub["roc_auc_mean"].max()
     # tight tolerance: only consider LRs statistically indistinguishable from max
-    noise = float(sub["roc_auc_std"].mean()) * 0.1 if "roc_auc_std" in sub.columns else 1e-5
+    if "roc_auc_std" in sub.columns:
+        raw = float(sub["roc_auc_std"].mean()) * 0.1
+        noise = raw if np.isfinite(raw) else 1e-5
+    else:
+        noise = 1e-5
     noise = max(noise, 1e-5)
     plateau = sub[sub["roc_auc_mean"] >= mx - noise]
     if "gen_gap_mean" in plateau.columns:
         return float(plateau.loc[plateau["gen_gap_mean"].idxmin(), "lr"])
     return float(plateau.sort_values("lr").iloc[0]["lr"])
+
+
+def _best_lr_train_from_agg(agg: pd.DataFrame, act: str) -> float | None:
+    """Best LR by minimizing final train MSE (summary-aggregate fallback)."""
+    if "final_train_mse_mean" not in agg.columns:
+        return None
+    sub = agg[agg["activation"] == act].dropna(subset=["final_train_mse_mean"])
+    if sub.empty:
+        return None
+    return float(sub.loc[sub["final_train_mse_mean"].idxmin(), "lr"])
+
+
+def _best_lr_train_from_curves(
+    curves_df: pd.DataFrame,
+    act: str,
+    test_per: float | None,
+) -> float | None:
+    """Best LR by minimizing last train MSE, matching the curves-based bar logic."""
+    if curves_df.empty or "train_mse" not in curves_df.columns:
+        return None
+
+    work = _filter_curves_scope(curves_df, test_per=test_per, activations=[act])
+    work = work[work["train_mse"].notna()]
+    if work.empty:
+        return None
+
+    grp = _curves_mean_std_by_epoch(work)
+    candidates: list[tuple[float, float]] = []  # (lr, last_train_mse)
+    for lr in sorted(grp["lr"].astype(float).unique().tolist()):
+        cfg = grp[np.isclose(grp["lr"].astype(float), lr, atol=1e-12)].sort_values("epoch")
+        if cfg.empty:
+            continue
+        candidates.append((float(lr), float(cfg.iloc[-1]["mean"])))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda x: x[1])[0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,15 +310,14 @@ def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds:
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, 3, figsize=(FIG_SIZE[0] * 1.2, FIG_SIZE[1] * 0.82))
 
+        # Add y=0 reference line to gen gap panel BEFORE drawing legends
+        axes[2].axhline(0, color="#7f8c8d", linestyle=":", linewidth=1.2,
+                        label="Sin sobreajuste")
+
         for ax, (mc, sc, ylabel, title, log_y, minimize) in zip(axes, panels):
             _plot_sweep_panel(ax, agg, mc, sc, ylabel, title, best_lrs,
                               log_y=log_y, minimize=minimize)
             ax.legend(fontsize=8, loc="best")
-
-        # Add y=0 reference line to gen gap panel
-        axes[2].axhline(0, color="#7f8c8d", linestyle=":", linewidth=1.2,
-                        label="Sin sobreajuste")
-        axes[2].legend(fontsize=8, loc="best")
 
         # Shared best-LR legend entries
         present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
@@ -378,6 +461,7 @@ def plot_comparacion(
 def plot_convergencia(
     curves_df: pd.DataFrame,
     best_lrs: dict[str, float | None],
+    test_per: float | None = None,
 ) -> None:
     """Convergence-speed chart: train MSE vs epoch at best LR per activation.
 
@@ -388,9 +472,7 @@ def plot_convergencia(
         print("  [Fig 3] Sin curvas de train_mse para graficar convergencia.")
         return
 
-    work = curves_df.copy()
-    work["activation"] = work["activation"].map(_norm_act)
-    work = work[work["activation"].isin(["tanh", "logistic"])]
+    work = _filter_curves_scope(curves_df, test_per=test_per, activations=["tanh", "logistic"])
 
     present = [a for a in ["tanh", "logistic"] if best_lrs.get(a) is not None]
     if not present:
@@ -403,10 +485,11 @@ def plot_convergencia(
 
         for act in present:
             lr = float(best_lrs[act])
+            _cols = ["seed", "epoch", "train_mse"] + (["test_mse"] if "test_mse" in work.columns else [])
             sub = work[
                 (work["activation"] == act) &
                 np.isclose(work["lr"].astype(float), lr, atol=1e-12)
-            ][["seed", "epoch", "train_mse", "test_mse"]]
+            ][_cols]
 
             if sub.empty:
                 continue
@@ -420,7 +503,7 @@ def plot_convergencia(
                 continue
 
             y_mean = pivot_train.mean(axis=1).to_numpy(float)
-            y_std = pivot_train.std(axis=1).fillna(0.0).to_numpy(float)
+            y_std = pivot_train.std(axis=1, ddof=0).fillna(0.0).to_numpy(float)
             x = pivot_train.index.to_numpy(int)
 
             color = COLORS_ACT[act]
@@ -432,7 +515,7 @@ def plot_convergencia(
                 sub.dropna(subset=["test_mse"])
                 .pivot_table(index="epoch", columns="seed", values="test_mse", aggfunc="mean")
                 .sort_index()
-            )
+            ) if "test_mse" in sub.columns else pd.DataFrame()
             if not pivot_test.empty:
                 yt_mean = pivot_test.mean(axis=1).to_numpy(float)
                 xt = pivot_test.index.to_numpy(int)
@@ -481,15 +564,13 @@ def plot_convergencia(
         _save(fig, "tanh_vs_logistica_convergencia.png")
 
 
-def plot_convergencia_todos_lrs(curves_df: pd.DataFrame) -> None:
+def plot_convergencia_todos_lrs(curves_df: pd.DataFrame, test_per: float | None = None) -> None:
     """Convergence chart using train MSE for all LRs per activation."""
     if curves_df.empty or "train_mse" not in curves_df.columns:
         print("  [Fig 4] Sin curvas de train_mse para graficar todos los LR.")
         return
 
-    work = curves_df.copy()
-    work["activation"] = work["activation"].map(_norm_act)
-    work = work[work["activation"].isin(["tanh", "logistic"])]
+    work = _filter_curves_scope(curves_df, test_per=test_per, activations=["tanh", "logistic"])
     if work.empty:
         print("  [Fig 4] Sin activaciones tanh/logistic para graficar todos los LR.")
         return
@@ -520,7 +601,7 @@ def plot_convergencia_todos_lrs(curves_df: pd.DataFrame) -> None:
 
                 x = pivot.index.to_numpy(int)
                 y_mean = pivot.mean(axis=1).to_numpy(float)
-                y_std = pivot.std(axis=1).fillna(0.0).to_numpy(float)
+                y_std = pivot.std(axis=1, ddof=0).fillna(0.0).to_numpy(float)
 
                 ax.plot(x, y_mean, color=color, linewidth=1.7, label=f"lr={lr:g}")
                 ax.fill_between(
@@ -544,10 +625,20 @@ def plot_convergencia_todos_lrs(curves_df: pd.DataFrame) -> None:
         _save(fig, "tanh_vs_logistica_convergencia_todos_lrs.png")
 
 
-def plot_last_mse_vs_lr(agg: pd.DataFrame) -> None:
-    """Final train MSE as bar chart per (activation, lr) configuration."""
-    if "final_train_mse_mean" not in agg.columns:
-        print("  [Fig 5] No existe final_train_mse_mean en el agregado.")
+def plot_last_mse_vs_lr(
+    agg: pd.DataFrame,
+    curves_df: pd.DataFrame | None = None,
+    test_per: float | None = None,
+) -> None:
+    """Final train MSE as bar chart per (activation, lr) configuration.
+
+    Priority source (to match comparison_underfitting_plot):
+      1) curves_df: mean/std over seeds at each epoch, then take the last epoch.
+      2) agg fallback: final_train_mse_mean/std from summary aggregation.
+    """
+    use_curves = curves_df is not None and (not curves_df.empty) and ("train_mse" in curves_df.columns)
+    if not use_curves and "final_train_mse_mean" not in agg.columns:
+        print("  [Fig 5] No hay fuente de datos para last MSE.")
         return
 
     present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
@@ -556,17 +647,38 @@ def plot_last_mse_vs_lr(agg: pd.DataFrame) -> None:
         return
 
     rows: list[tuple[str, float, float, float]] = []
-    for act in present:
-        sub = agg[agg["activation"] == act].sort_values("lr")
-        for _, r in sub.iterrows():
-            rows.append(
-                (
-                    act,
-                    float(r["lr"]),
-                    float(r["final_train_mse_mean"]),
-                    float(r["final_train_mse_std"]) if "final_train_mse_std" in sub.columns else 0.0,
+
+    if use_curves:
+        work = _filter_curves_scope(curves_df, test_per=test_per, activations=present)
+        work = work[work["train_mse"].notna()]
+
+        # Same logic as comparison_underfitting_plot:
+        # average over seeds by (activation, lr, epoch), then take final epoch per config.
+        grp = _curves_mean_std_by_epoch(work)
+
+        for act in present:
+            act_df = grp[grp["activation"] == act]
+            if act_df.empty:
+                continue
+            for lr in sorted(act_df["lr"].astype(float).unique().tolist()):
+                cfg = act_df[np.isclose(act_df["lr"].astype(float), lr, atol=1e-12)].sort_values("epoch")
+                if cfg.empty:
+                    continue
+                final = cfg.iloc[-1]
+                rows.append((act, float(lr), float(final["mean"]), float(final["std"])))
+    else:
+        for act in present:
+            sub = agg[agg["activation"] == act].sort_values("lr")
+            for _, r in sub.iterrows():
+                rows.append(
+                    (
+                        act,
+                        float(r["lr"]),
+                        float(r["final_train_mse_mean"]),
+                        float(r["final_train_mse_std"]) if "final_train_mse_std" in sub.columns else 0.0,
+                    )
                 )
-            )
+
     if not rows:
         print("  [Fig 5] No hay filas para construir el grafico de barras.")
         return
@@ -615,7 +727,7 @@ def plot_last_mse_vs_lr(agg: pd.DataFrame) -> None:
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
         ax.set_ylabel("Last MSE (train)")
-        ax.set_title("Last MSE por configuracion", fontsize=10.5)
+        ax.set_title("Last MSE por configuracion (alineado con curvas)", fontsize=10.5)
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[a], edgecolor=COLORS_ACT[a], alpha=0.82, label=LABEL_ACT[a])
@@ -633,10 +745,10 @@ def plot_last_mse_vs_lr(agg: pd.DataFrame) -> None:
 # Console summary
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None]) -> None:
+def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None], criterion_label: str) -> None:
     present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
 
-    print("\n--- Mejor LR por activacion (criterio: ROC-AUC test) ---")
+    print(f"\n--- Mejor LR por activacion (criterio: {criterion_label}) ---")
     for act in present:
         lr = best_lrs.get(act)
         if lr is None:
@@ -719,9 +831,12 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _test_per_from_config(cfg: dict) -> float:
-    vals = [v for v in cfg.get("grid", {}).get("test_per", []) if v is not None]
-    return float(vals[0]) if vals else 0.20
+def _test_per_from_config(cfg: dict) -> float | None:
+    vals = cfg.get("grid", {}).get("test_per", [])
+    if any(v is None for v in vals):
+        return None
+    nums = [v for v in vals if v is not None]
+    return float(nums[0]) if nums else 0.20
 
 
 def _threshold_from_config(cfg: dict) -> float:
@@ -753,29 +868,44 @@ def main() -> None:
     print(f"Activaciones: {present}  |  LRs por activacion: {df.groupby('activation')['lr'].nunique().to_dict()}  |  Semillas: {n_seeds}")
 
     agg = _aggregate(df)
-    best_lrs: dict[str, float | None] = {
-        "tanh":    _best_lr(agg, "tanh"),
-        "logistic": _best_lr(agg, "logistic"),
-    }
+    criterion_label = "ROC-AUC test"
+    best_lrs: dict[str, float | None] = {"tanh": None, "logistic": None}
+    curves_df: pd.DataFrame | None = None
+    if curves_path.is_file():
+        curves_df = pd.read_csv(curves_path)
+
+    if test_per is None:
+        criterion_label = "Last MSE en train (min)"
+        for act in ("tanh", "logistic"):
+            lr = None
+            if curves_df is not None:
+                lr = _best_lr_train_from_curves(curves_df, act, test_per=None)
+            best_lrs[act] = lr if lr is not None else _best_lr_train_from_agg(agg, act)
+    else:
+        best_lrs = {
+            "tanh": _best_lr(agg, "tanh"),
+            "logistic": _best_lr(agg, "logistic"),
+        }
 
     print("\n[Fig 1] LR sweep...")
     plot_lr_sweep(agg, best_lrs, n_seeds)
 
     print("[Fig 2] Comparacion final...")
     plot_comparacion(agg, best_lrs)
-    print("[Fig 5] Last MSE por LR...")
-    plot_last_mse_vs_lr(agg)
 
-    if curves_path.is_file():
-        curves_df = pd.read_csv(curves_path)
+    if curves_df is not None:
+        print("[Fig 5] Last MSE por LR...")
+        plot_last_mse_vs_lr(agg, curves_df=curves_df, test_per=test_per)
         print("[Fig 3] Velocidad de convergencia...")
-        plot_convergencia(curves_df, best_lrs)
+        plot_convergencia(curves_df, best_lrs, test_per=test_per)
         print("[Fig 4] Convergencia con todos los LR...")
-        plot_convergencia_todos_lrs(curves_df)
+        plot_convergencia_todos_lrs(curves_df, test_per=test_per)
     else:
+        print("[Fig 5] Last MSE por LR...")
+        plot_last_mse_vs_lr(agg)
         print(f"[Fig 3] Omitida: curves CSV no encontrado ({curves_path})")
 
-    _print_summary(agg, best_lrs)
+    _print_summary(agg, best_lrs, criterion_label=criterion_label)
     print("\nListo. Figuras generadas en plots/ej1/")
 
 
