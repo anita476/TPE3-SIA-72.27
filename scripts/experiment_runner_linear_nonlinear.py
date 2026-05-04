@@ -37,7 +37,7 @@ from utils.normalizers import standard_scale_apply, standard_scale_params
 from utils.test_data_split import stratified_split_regression
 
 ROOT = _ROOT
-DEFAULT_CONFIG = ROOT / "configs" / "linear_vs_nonlinear_fraud.json"
+DEFAULT_CONFIG = ROOT / "configs" / "experiments_default.json"
 
 RESULTS_DIR        = str(ROOT / "results")
 SUMMARY_CSV        = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_summary.csv")
@@ -95,15 +95,54 @@ def _merge_drop_cols(cfg: dict, cli_drop: list[str]) -> list[str]:
 def experiment_bases_from_config(cfg: dict) -> list[dict]:
     """Build a flat list of experiment dicts from a JSON config.
 
-    Merges `base` with the Cartesian product of `grid` (each grid value must be
-    a list).  Each output dict has a scalar `seed` key.
+    Merges ``base`` with the Cartesian product of ``grid`` (each grid value must be
+    a list). Each output dict has a scalar ``seed`` key.
+
+    Alternatively, set ``activation_lr_pairs`` (list of ``{"activation": ..., "lr": ...}``)
+    to assign one learning rate per activation; ``grid`` must then omit ``activation``
+    and ``lr``. Each pair is crossed with the Cartesian product of the remaining
+    ``grid`` keys.
     """
     base = dict(cfg.get("base", {}))
     if cfg.get("runs"):
         raise SystemExit(
-            "Config key 'runs' is not supported. Use only 'base' and 'grid' (see README)."
+            "Config key 'runs' is not supported. Use 'base' + 'grid' "
+            "or 'activation_lr_pairs' (see configs)."
         )
+
+    pairs_raw = cfg.get("activation_lr_pairs")
     grid_cfg = cfg.get("grid") or {}
+
+    if pairs_raw is not None:
+        if not isinstance(pairs_raw, list) or not pairs_raw:
+            raise SystemExit("'activation_lr_pairs' must be a non-empty JSON array.")
+        if "activation" in grid_cfg or "lr" in grid_cfg:
+            raise SystemExit(
+                "With 'activation_lr_pairs', remove 'activation' and 'lr' from 'grid'."
+            )
+        parsed_pairs: list[tuple[str, float]] = []
+        for i, row in enumerate(pairs_raw):
+            if isinstance(row, dict):
+                if "activation" not in row or "lr" not in row:
+                    raise SystemExit(
+                        f"activation_lr_pairs[{i}] needs 'activation' and 'lr' keys."
+                    )
+                parsed_pairs.append((str(row["activation"]), float(row["lr"])))
+            elif isinstance(row, (list, tuple)) and len(row) == 2:
+                parsed_pairs.append((str(row[0]), float(row[1])))
+            else:
+                raise SystemExit(
+                    f"activation_lr_pairs[{i}] must be an object or [activation, lr] pair."
+                )
+
+        out_pairs: list[dict] = []
+        keys = list(grid_cfg.keys())
+        val_lists = [grid_cfg[k] for k in keys]
+        for act, lr in parsed_pairs:
+            for combo in itertools.product(*val_lists):
+                merged = {**base, **dict(zip(keys, combo, strict=True)), "activation": act, "lr": lr}
+                out_pairs.extend(_split_seeds(merged))
+        return out_pairs
 
     out: list[dict] = []
     if grid_cfg:
