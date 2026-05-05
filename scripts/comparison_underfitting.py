@@ -13,15 +13,23 @@ Output CSVs (written to results/):
     <name>_nonlinear_curves.csv    — one row per (seed, lr, activation, epoch)
     <name>_linear_recall.csv       — one row per (seed, lr, epoch)  [recall]
     <name>_nonlinear_recall.csv    — one row per (seed, lr, activation, epoch) [recall]
+    <name>_linear_accuracy.csv     — one row per (seed, lr, epoch)  [accuracy]
+    <name>_nonlinear_accuracy.csv  — one row per (seed, lr, activation, epoch) [accuracy]
 
 Columns MSE/BCE CSVs : model, seed, lr, [activation,] epoch, train_mse, train_bce
 Columns recall CSVs  : model, seed, lr, [activation,] epoch, train_recall
+Columns accuracy CSVs: model, seed, lr, [activation,] epoch, train_accuracy
 
 Label scaling:
     tanh output range is (-1, 1), so when activation='tanh' the labels are
     scaled from {0,1} → {-1,1} before training.  Predictions are mapped back
-    to [0,1] before MSE, BCE and recall are computed so all metrics stay
-    comparable across activations.
+    to [0,1] before MSE, BCE, recall and accuracy are computed so all metrics
+    stay comparable across activations.
+
+Note on accuracy vs recall for imbalanced datasets:
+    Accuracy can be misleading when classes are skewed (e.g. fraud detection).
+    A model predicting all-negative can achieve >98% accuracy while recall=0.
+    Always read accuracy alongside recall.
 """
 
 import argparse
@@ -62,6 +70,16 @@ def recall_score(y_true: np.ndarray, y_pred_prob: np.ndarray, threshold: float =
     tp = int(np.sum((y_pred == 1) & (y_true == 1)))
     fn = int(np.sum((y_pred == 0) & (y_true == 1)))
     return tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+
+def accuracy_score(y_true: np.ndarray, y_pred_prob: np.ndarray, threshold: float = 0.5) -> float:
+    """Overall accuracy: fraction of correctly classified samples.
+
+    Warning: on imbalanced datasets this can be high even when the model
+    fails to detect the minority class.  Always read alongside recall.
+    """
+    y_pred = (y_pred_prob >= threshold).astype(int)
+    return float(np.mean(y_pred == y_true.astype(int)))
 
 
 def normalize(X: np.ndarray, method: str) -> np.ndarray:
@@ -115,8 +133,8 @@ def fit_and_record(
     activation: str = "logistic",
 ) -> list[dict]:
     """
-    Trains the model epoch by epoch, recording train MSE, BCE and recall
-    after every epoch.
+    Trains the model epoch by epoch, recording train MSE, BCE, recall and
+    accuracy after every epoch.
 
     y is always expected in {0, 1}.
     For tanh, labels are scaled to {-1, +1} internally; predictions are mapped
@@ -153,19 +171,25 @@ def fit_and_record(
             prob_pred = raw_pred
         else:  # lineal
             prob_pred = linear_pred_to_prob(raw_pred)
-        tr_mse    = mse(y, prob_pred)
-        tr_bce    = bce_from_predictions(y, prob_pred)
-        tr_recall = recall_score(y, prob_pred)
+
+        tr_mse      = mse(y, prob_pred)
+        tr_bce      = bce_from_predictions(y, prob_pred)
+        tr_recall   = recall_score(y, prob_pred)
+        tr_accuracy = accuracy_score(y, prob_pred)
 
         rows.append({
-            "epoch":        epoch + 1,
-            "train_mse":    tr_mse,
-            "train_bce":    tr_bce,
-            "train_recall": tr_recall,
+            "epoch":          epoch + 1,
+            "train_mse":      tr_mse,
+            "train_bce":      tr_bce,
+            "train_recall":   tr_recall,
+            "train_accuracy": tr_accuracy,
         })
 
         if sse < epsilon:
-            print(f"      ✓ converged at epoch {epoch + 1}  (SSE={sse:.4f})  recall={tr_recall:.4f}")
+            print(
+                f"      ✓ converged at epoch {epoch + 1}  (SSE={sse:.4f})"
+                f"  recall={tr_recall:.4f}  accuracy={tr_accuracy:.4f}"
+            )
             break
 
     return rows
@@ -235,10 +259,12 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
     name = base.get("name", "experiment")
 
     # Output file paths
-    linear_csv         = out_dir / f"{name}_linear_curves.csv"
-    nonlinear_csv      = out_dir / f"{name}_nonlinear_curves.csv"
-    linear_recall_csv  = out_dir / f"{name}_linear_recall.csv"
-    nonlinear_recall_csv = out_dir / f"{name}_nonlinear_recall.csv"
+    linear_csv            = out_dir / f"{name}_linear_curves.csv"
+    nonlinear_csv         = out_dir / f"{name}_nonlinear_curves.csv"
+    linear_recall_csv     = out_dir / f"{name}_linear_recall.csv"
+    nonlinear_recall_csv  = out_dir / f"{name}_nonlinear_recall.csv"
+    linear_acc_csv        = out_dir / f"{name}_linear_accuracy.csv"
+    nonlinear_acc_csv     = out_dir / f"{name}_nonlinear_accuracy.csv"
 
     total_lin = len(seeds) * len(lr_linear)
     total_nln = len(seeds) * len(lr_nonlinear) * len(activations)
@@ -255,6 +281,7 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
     print("\n── Linear perceptron ───────────────────────────────────────────")
     lin_fields        = ["model", "seed", "lr", "epoch", "train_mse", "train_bce"]
     lin_recall_fields = ["model", "seed", "lr", "epoch", "train_recall"]
+    lin_acc_fields    = ["model", "seed", "lr", "epoch", "train_accuracy"]
     lin_jobs = [
         (seed, lr, X, y, epochs, epsilon)
         for seed, lr in product(seeds, lr_linear)
@@ -267,10 +294,12 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
         for future in as_completed(futures):
             seed, lr, rows, elapsed = future.result()
             done += 1
-            final_recall = rows[-1]["train_recall"]
+            final_recall   = rows[-1]["train_recall"]
+            final_accuracy = rows[-1]["train_accuracy"]
             print(
                 f"  [{done}/{total_lin}] seed={seed}  lr={lr}"
-                f"  epochs={len(rows)}  recall={final_recall:.4f}  time={elapsed:.1f}s"
+                f"  epochs={len(rows)}  recall={final_recall:.4f}"
+                f"  accuracy={final_accuracy:.4f}  time={elapsed:.1f}s"
             )
             lin_results[(seed, lr)] = rows
 
@@ -288,7 +317,7 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
                     "train_mse": r["train_mse"],
                     "train_bce": r["train_bce"],
                 })
-    print(f"\n  ✓ Saved MSE/BCE → {linear_csv}")
+    print(f"\n  ✓ Saved MSE/BCE  → {linear_csv}")
 
     # Write recall CSV
     with open(linear_recall_csv, "w", newline="") as fout:
@@ -305,10 +334,26 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
                 })
     print(f"  ✓ Saved recall   → {linear_recall_csv}")
 
+    # Write accuracy CSV
+    with open(linear_acc_csv, "w", newline="") as fout:
+        writer = csv.DictWriter(fout, fieldnames=lin_acc_fields)
+        writer.writeheader()
+        for (seed, lr), rows in lin_results.items():
+            for r in rows:
+                writer.writerow({
+                    "model":          "linear",
+                    "seed":           seed,
+                    "lr":             lr,
+                    "epoch":          r["epoch"],
+                    "train_accuracy": r["train_accuracy"],
+                })
+    print(f"  ✓ Saved accuracy → {linear_acc_csv}")
+
     # ── NON-LINEAR ───────────────────────────────────────────────────────────
     print("\n── Non-linear perceptron ───────────────────────────────────────")
     nln_fields        = ["model", "seed", "lr", "activation", "epoch", "train_mse", "train_bce"]
     nln_recall_fields = ["model", "seed", "lr", "activation", "epoch", "train_recall"]
+    nln_acc_fields    = ["model", "seed", "lr", "activation", "epoch", "train_accuracy"]
     nln_jobs = [
         (seed, lr, activation, beta, X, y, epochs, epsilon)
         for seed, lr, activation in product(seeds, lr_nonlinear, activations)
@@ -321,10 +366,12 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
         for future in as_completed(futures):
             seed, lr, activation, rows, elapsed = future.result()
             done += 1
-            final_recall = rows[-1]["train_recall"]
+            final_recall   = rows[-1]["train_recall"]
+            final_accuracy = rows[-1]["train_accuracy"]
             print(
                 f"  [{done}/{total_nln}] seed={seed}  lr={lr}  act={activation}"
-                f"  epochs={len(rows)}  recall={final_recall:.4f}  time={elapsed:.1f}s"
+                f"  epochs={len(rows)}  recall={final_recall:.4f}"
+                f"  accuracy={final_accuracy:.4f}  time={elapsed:.1f}s"
             )
             nln_results[(seed, lr, activation)] = rows
 
@@ -343,7 +390,7 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
                     "train_mse":  r["train_mse"],
                     "train_bce":  r["train_bce"],
                 })
-    print(f"\n  ✓ Saved MSE/BCE → {nonlinear_csv}")
+    print(f"\n  ✓ Saved MSE/BCE  → {nonlinear_csv}")
 
     # Write recall CSV
     with open(nonlinear_recall_csv, "w", newline="") as fout:
@@ -360,6 +407,23 @@ def run(config_path: str, outpath: str, workers: int, drop_cols: list[str] = [])
                     "train_recall": r["train_recall"],
                 })
     print(f"  ✓ Saved recall   → {nonlinear_recall_csv}")
+
+    # Write accuracy CSV
+    with open(nonlinear_acc_csv, "w", newline="") as fout:
+        writer = csv.DictWriter(fout, fieldnames=nln_acc_fields)
+        writer.writeheader()
+        for (seed, lr, activation), rows in nln_results.items():
+            for r in rows:
+                writer.writerow({
+                    "model":          "nonlinear",
+                    "seed":           seed,
+                    "lr":             lr,
+                    "activation":     activation,
+                    "epoch":          r["epoch"],
+                    "train_accuracy": r["train_accuracy"],
+                })
+    print(f"  ✓ Saved accuracy → {nonlinear_acc_csv}")
+
     print("\nAll done.")
 
 
