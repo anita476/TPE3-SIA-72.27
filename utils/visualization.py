@@ -262,6 +262,32 @@ def print_summary(results):
     print("=" * len(header))
 
 
+def plot_loss_curve(train_loss, val_errors=None, filename="loss_curve.png"):
+    """Train (and optional validation/test) loss per epoch — used by `digits_main.py`."""
+    train_loss = list(train_loss)
+    n          = len(train_loss)
+    epochs     = np.arange(1, n + 1, dtype=float)
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.plot(epochs, train_loss, label="Train", color=COLOR_TRAIN, linewidth=1.8)
+        if val_errors is not None:
+            val_errors = list(val_errors)
+            nv = min(n, len(val_errors))
+            if nv > 0:
+                ax.plot(
+                    np.arange(1, nv + 1, dtype=float),
+                    val_errors[:nv],
+                    label="Test",
+                    color=COLOR_VAL,
+                    linewidth=1.5,
+                    linestyle="--",
+                )
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss (mean error)")
+        ax.legend(loc="upper right")
+        _apply_style(fig, ax)
+        fig.tight_layout()
+        _save(fig, filename)
 
 
 # ── Single-model plots (for main.py) ─────────────────────────────────────────

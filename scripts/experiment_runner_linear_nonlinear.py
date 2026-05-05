@@ -37,7 +37,7 @@ from utils.normalizers import standard_scale_apply, standard_scale_params
 from utils.test_data_split import stratified_split_regression
 
 ROOT = _ROOT
-DEFAULT_CONFIG = ROOT / "configs" / "experiments_default.json"
+DEFAULT_CONFIG = ROOT / "configs" / "lr_exploration_tanh_logistic.json"
 
 RESULTS_DIR        = str(ROOT / "results")
 SUMMARY_CSV        = str(Path(RESULTS_DIR) / "linear_vs_nonlinear_summary.csv")
