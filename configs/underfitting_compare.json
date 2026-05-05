@@ -1,9 +1,9 @@
 {
   "base": {
     "name": "fraud",
-    "data": "data/fraud_dataset.csv",
+    "data": "../data/fraud_dataset.csv",
     "label": "flagged_fraud",
-    "epochs": 500,
+    "epochs": 2000,
     "epsilon": 1e-5,
     "tolerance": 0.5,
     "normalize": "standard",
