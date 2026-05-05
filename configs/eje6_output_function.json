@@ -1,0 +1,36 @@
+[
+  {
+    "name": "eje6_softmax",
+    "layers": [784,150,10],
+    "lr": 0.001,
+    "epochs": 500,
+    "epsilon": 1e-6,
+    "beta": 1.0,
+    "activation": "logistic",
+    "initializer": "xavier",
+    "training_mode": "minibatch",
+    "batch_size": 16,
+    "optimizer": "adam",
+    "patience": 20,
+    "min_delta": 0.0001,
+    "seeds": [1,2,3],
+    "output_activation": "softmax"
+  },
+    {
+    "name": "eje6_without_softmax",
+    "layers": [784,150,10],
+    "lr": 0.001,
+    "epochs": 500,
+    "epsilon": 1e-6,
+    "beta": 1.0,
+    "activation": "logistic",
+    "initializer": "xavier",
+    "training_mode": "minibatch",
+    "batch_size": 16,
+    "optimizer": "adam",
+    "patience": 20,
+    "min_delta": 0.0001,
+    "seeds": [1,2,3],
+    "output_activation": "same"
+  }
+]
