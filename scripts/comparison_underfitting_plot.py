@@ -294,7 +294,6 @@ def main():
 
     combined = pd.concat(frames, ignore_index=True)
 
-    # ── optional filters ────────────────────────────────────────────────────
     if args.lr is not None:
         requested = set(args.lr)
         available = set(combined["lr"].unique())

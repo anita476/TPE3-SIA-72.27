@@ -1,9 +1,8 @@
 """
 plot_activation_tanh_vs_logistic.py
 
-Compares Tanh vs Logistic activations across learning rates and produces:
-  1. tanh_vs_logistica_lr_sweep.png  — 3 key metrics vs LR (1x3 semilog)
-  2. tanh_vs_logistica_comparacion.png — head-to-head bar chart at best LRs
+Compares Tanh vs Logistic activations across learning rates and writes figures
+to plots/ej1/ (lr sweep, brecha, last MSE, curvas de convergencia).
 
 Usage:
     python scripts/plot_activation_tanh_vs_logistic.py \
@@ -380,7 +379,6 @@ def _plot_sweep_panel(
     mean_col: str,
     std_col: str,
     ylabel: str,
-    title: str,
     best_lrs: dict[str, float | None],
     *,
     log_y: bool = False,
@@ -417,22 +415,21 @@ def _plot_sweep_panel(
 
     ax.set_xlabel("Learning rate")
     ax.set_ylabel(ylabel)
-    ax.set_title(title, fontsize=11)
     if log_y:
         ax.set_yscale("log")
 
 
 def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: int) -> None:
     panels = [
-        ("best_f2_mean", "best_f2_std", "F2 optimo (test)", "F2 optimo en test  [β=2]", False, False),
+        ("best_f2_mean", "best_f2_std", "F2 optimo (test)", False, False),
     ]
 
     with plt.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, 1, figsize=(FIG_SIZE[0] * 0.55, FIG_SIZE[1] * 0.82))
         axes = [axes]
 
-        for ax, (mc, sc, ylabel, title, log_y, minimize) in zip(axes, panels):
-            _plot_sweep_panel(ax, agg, mc, sc, ylabel, title, best_lrs,
+        for ax, (mc, sc, ylabel, log_y, minimize) in zip(axes, panels):
+            _plot_sweep_panel(ax, agg, mc, sc, ylabel, best_lrs,
                               log_y=log_y, minimize=minimize)
             handles, labels = ax.get_legend_handles_labels()
             if handles:
@@ -449,12 +446,8 @@ def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds:
         fig.legend(handles=extra_handles, loc="lower center", ncol=len(extra_handles),
                    fontsize=8.5, frameon=True, bbox_to_anchor=(0.5, -0.04))
 
-        fig.suptitle(
-            f"Tanh vs Logistica -- Exploracion de learning rate  |  banda = +-1 std ({n_seeds} semillas)",
-            fontsize=10,
-        )
         _apply_style(fig, *axes)
-        fig.tight_layout(rect=[0, 0.06, 1, 0.96])
+        fig.tight_layout(rect=[0, 0.06, 1, 1])
         _save(fig, "tanh_vs_logistica_lr_sweep.png")
 
 
@@ -467,7 +460,6 @@ def plot_brecha(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: i
             ax, agg,
             mean_col="gen_gap_mean", std_col="gen_gap_std",
             ylabel="Brecha de generalizacion",
-            title="Brecha (F1 train − F1 test)",
             best_lrs=best_lrs,
             log_y=False, minimize=False,
         )
@@ -489,136 +481,9 @@ def plot_brecha(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: i
             fig.legend(handles=extra_handles, loc="lower center", ncol=len(extra_handles),
                        fontsize=8.5, frameon=True, bbox_to_anchor=(0.5, -0.06))
 
-        fig.suptitle(
-            f"Brecha de generalizacion vs learning rate  |  banda = +-1 std ({n_seeds} semillas)",
-            fontsize=10,
-        )
         _apply_style(fig, ax)
-        fig.tight_layout(rect=[0, 0.08, 1, 0.96])
+        fig.tight_layout(rect=[0, 0.08, 1, 1])
         _save(fig, "tanh_vs_logistica_brecha.png")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Figure 2 — Head-to-head comparison at best LRs
-# ─────────────────────────────────────────────────────────────────────────────
-
-def plot_comparacion(
-    agg: pd.DataFrame,
-    best_lrs: dict[str, float | None],
-) -> None:
-    present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
-
-    # (label, mean_col, std_col, higher_is_better)
-    metric_defs = [
-        ("Recall óptimo",   "best_recall_mean",         "best_recall_std",         True),
-        ("F2 óptimo",       "best_f2_mean",             "best_f2_std",             True),
-        ("Especificidad",   "fpr_at_threshold_mean",    "fpr_at_threshold_std",    False),  # shown as 1-FPR
-    ]
-    # keep only metrics present in agg
-    metric_defs = [(lbl, mc, sc, hib) for lbl, mc, sc, hib in metric_defs if mc in agg.columns]
-
-    n_metrics = len(metric_defs)
-    bar_h = 0.32
-    gap   = 0.1
-    n_acts = len(present)
-
-    # Extract values per activation at its best LR
-    vals: dict[str, dict[str, tuple[float, float]]] = {}  # act -> label -> (mean, std)
-    for act in present:
-        lr = best_lrs.get(act)
-        if lr is None:
-            continue
-        row = agg[(agg["activation"] == act) & np.isclose(agg["lr"].astype(float), lr, atol=1e-11)]
-        if row.empty:
-            continue
-        vals[act] = {}
-        for lbl, mc, sc, hib in metric_defs:
-            m_val = float(row[mc].iloc[0]) if mc in row.columns else 0.0
-            s_val = float(row[sc].iloc[0]) if sc in row.columns else 0.0
-            # Invert FPR -> Especificidad
-            if "fpr" in mc:
-                m_val = 1.0 - m_val
-            vals[act][lbl] = (m_val, s_val)
-
-    with plt.rc_context(PLOT_RC):
-        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.92, FIG_SIZE[1] * 1.05))
-
-        y_centers = np.arange(n_metrics, dtype=float)
-
-        for ai, act in enumerate(present):
-            if act not in vals:
-                continue
-            color = COLORS_ACT[act]
-            offset = (ai - (n_acts - 1) / 2) * (bar_h + gap / 2)
-            for mi, (lbl, mc, sc, hib) in enumerate(metric_defs):
-                m_val, s_val = vals[act].get(lbl, (0.0, 0.0))
-                y = y_centers[mi] + offset
-                ax.barh(y, m_val, height=bar_h, color=color, alpha=0.75,
-                        edgecolor=color, linewidth=0.8, xerr=s_val,
-                        error_kw=dict(ecolor="#2c3e50", capsize=3, linewidth=1.2))
-                # value label
-                ax.text(min(m_val + s_val + 0.012, 0.97), y, f"{m_val:.3f}",
-                        va="center", ha="left", fontsize=7.5,
-                        color=STYLE["text_title"], fontweight="bold")
-
-        # Mark winner per metric
-        for mi, (lbl, mc, sc, hib) in enumerate(metric_defs):
-            act_vals = {a: vals[a].get(lbl, (0.0, 0.0))[0] for a in present if a in vals}
-            if len(act_vals) < 2:
-                continue
-            winner = max(act_vals, key=act_vals.get)
-            loser_val = min(act_vals.values())
-            # only mark if gap is meaningful
-            if act_vals[winner] - loser_val > 1e-4:
-                ai = present.index(winner)
-                offset = (ai - (n_acts - 1) / 2) * (bar_h + gap / 2)
-                ax.scatter([-0.015], [y_centers[mi] + offset],
-                           s=60, marker="D", color=COLORS_ACT[winner],
-                           zorder=9, clip_on=False)
-
-        ax.set_yticks(y_centers)
-        ax.set_yticklabels([m[0] for m in metric_defs], fontsize=9)
-        ax.set_xlabel("Valor (0-1)")
-        ax.set_xlim(0, 1.05)
-        ax.invert_yaxis()
-
-        # Winner annotation box
-        if len(present) == 2 and all(a in vals for a in present):
-            a0, a1 = present
-            r0 = vals[a0].get("Recall óptimo", (0, 0))[0]
-            r1 = vals[a1].get("Recall óptimo", (0, 0))[0]
-            winner_act = a0 if r0 >= r1 else a1
-            winner_metric = max(r0, r1)
-            metric_line = f"Recall óptimo = {winner_metric:.4f}"
-            winner_lr = best_lrs[winner_act]
-            f2_val = vals[winner_act].get("F2 óptimo", (0, 0))[0]
-            ax.text(0.98, 0.02,
-                    f"Mejor modelo:\n{LABEL_ACT[winner_act]} (lr={winner_lr:g})"
-                    f"\n{metric_line}"
-                    f"\nF2 óptimo = {f2_val:.4f}",
-                    transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5,
-                    fontweight="bold", color=COLORS_ACT[winner_act],
-                    bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                              edgecolor=COLORS_ACT[winner_act], alpha=0.92))
-
-        lr_strs = [f"{LABEL_ACT[a]} lr={best_lrs[a]:g}" for a in present if best_lrs.get(a)]
-        title_str = "Comparacion directa -- " + " vs ".join(lr_strs)
-        ax.set_title(title_str, fontsize=10)
-
-        legend_handles = [
-            mpatches.Patch(facecolor=COLORS_ACT[a], alpha=0.8, label=LABEL_ACT[a])
-            for a in present
-        ] + [plt.Line2D([0], [0], marker="D", color="gray", linestyle="None",
-                        markersize=6, label="Ganador (diferencia > 0.0001)")]
-        ax.legend(handles=legend_handles, fontsize=8.5, loc="lower right")
-
-        _apply_style(fig, ax)
-        # suppress minor y-grid (it's a horizontal bar chart)
-        ax.grid(axis="y", which="both", visible=False)
-        ax.grid(axis="x", which="major", linestyle="-", linewidth=0.6,
-                alpha=0.4, color=STYLE["grid"], zorder=0)
-        fig.tight_layout()
-        _save(fig, "tanh_vs_logistica_comparacion.png")
 
 
 def plot_convergencia(
@@ -704,9 +569,8 @@ def plot_convergencia(
                 legend_rows.append(f"{LABEL_ACT[act]}: ep90=n/a (lr={lr:g})")
 
         ax.set_yscale("log")
-        ax.set_xlabel("Epoca")
+        ax.set_xlabel("Época")
         ax.set_ylabel("MSE (escala log)")
-        ax.set_title("Velocidad de convergencia (train) en el mejor LR por activacion", fontsize=10.5)
         ax.legend(fontsize=8.5, loc="upper right")
 
         if legend_rows:
@@ -753,7 +617,6 @@ def plot_convergencia_todos_lrs(curves_df: pd.DataFrame, test_per: float | None 
             ax = ax_list[i]
             sub = work[work["activation"] == act].dropna(subset=["train_mse"])
             if sub.empty:
-                ax.set_title(f"{LABEL_ACT[act]} (sin datos)")
                 continue
 
             lrs = sorted(sub["lr"].astype(float).unique().tolist())
@@ -783,19 +646,17 @@ def plot_convergencia_todos_lrs(curves_df: pd.DataFrame, test_per: float | None 
                 )
 
             ax.set_yscale("log")
-            ax.set_xlabel("Epoca")
+            ax.set_xlabel("Época")
             if i == 0:
                 ax.set_ylabel("Train MSE (escala log)")
                 # Más marcas en escala log (1, 2, 5 por década)
                 ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
-            ax.set_title(f"{LABEL_ACT[act]} -- todos los LR", fontsize=10)
             ax.legend(fontsize=7.2, ncol=2, loc="upper right", framealpha=0.9)
 
         _apply_style(fig, *ax_list)
         for ax in ax_list[1:]:
             ax.tick_params(axis="y", left=False, labelleft=False)
-        fig.suptitle("Convergencia por activacion con todos los learning rates", fontsize=10.5)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.tight_layout()
         _save(fig, "tanh_vs_logistica_convergencia_todos_lrs.png")
 
 
@@ -901,7 +762,6 @@ def plot_last_mse_vs_lr(
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
         ax.set_ylabel("Last MSE (train)")
-        ax.set_title("Last MSE por configuracion (alineado con curvas)", fontsize=10.5)
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[a], edgecolor=COLORS_ACT[a], alpha=0.82, label=LABEL_ACT[a])
@@ -1013,7 +873,7 @@ def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None], criteri
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Tanh vs Logistica -- LR sweep + comparacion final")
+    p = argparse.ArgumentParser(description="Tanh vs Logistica — LR sweep y curvas de convergencia")
     p.add_argument("--config",  type=Path, default=DEFAULT_CONFIG,
                    help=f"Config JSON (default: {DEFAULT_CONFIG.name})")
     p.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY,
