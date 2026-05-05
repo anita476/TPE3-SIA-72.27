@@ -189,8 +189,14 @@ def plot_metric(
 
 
 def final_value_bars(ax: plt.Axes, all_configs: list[pd.DataFrame], col: str, title: str,
-                     show_std: bool = True):
-    """Bar chart of the final-epoch value for each config, with optional std error bars."""
+                     show_std: bool = True, sort_descending: bool = False):
+    """Bar chart of the final-epoch value for each config, with optional std error bars.
+
+    Parameters
+    ----------
+    sort_descending : bool
+        If True, bars are ordered from highest to lowest final value.
+    """
     std_col = f"{col}_std"
     labels, values, errors, colors = [], [], [], []
     for cfg in all_configs:
@@ -206,6 +212,13 @@ def final_value_bars(ax: plt.Axes, all_configs: list[pd.DataFrame], col: str, ti
     if not labels:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
         return
+
+    if sort_descending:
+        order  = sorted(range(len(values)), key=lambda i: values[i], reverse=True)
+        labels = [labels[i] for i in order]
+        values = [values[i] for i in order]
+        errors = [errors[i] for i in order]
+        colors = [colors[i] for i in order]
 
     x    = np.arange(len(labels))
     bars = ax.bar(x, values, color=colors, width=0.55, zorder=3)
@@ -338,7 +351,7 @@ def main():
     # ── Figure 1b: MSE final-value bars ────────────────────────────────────
     fig, ax = plt.subplots(figsize=(7, 5))
     fig.suptitle("Training MSE — linear vs non-linear perceptron", fontsize=14, y=1.01)
-    final_value_bars(ax, all_cfgs, "train_mse", "Final MSE per config", show_std=show_std)
+    final_value_bars(ax, all_cfgs, "train_mse", "Final MSE per config", show_std=show_std, sort_descending=True)
     fig.tight_layout()
     p = out_dir / "final_bars_mse.png"
     fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)

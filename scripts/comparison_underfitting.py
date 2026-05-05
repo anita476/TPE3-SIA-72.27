@@ -83,6 +83,9 @@ def label_scale_for_activation(y: np.ndarray, activation: str) -> np.ndarray:
 def tanh_pred_to_prob(y_pred: np.ndarray) -> np.ndarray:
     return (y_pred + 1.0) / 2.0
 
+def linear_pred_to_prob(y_pred: np.ndarray) -> np.ndarray:
+    """Mapea output lineal a [0,1] para comparación justa."""
+    return np.clip(y_pred, 0.0, 1.0)
 
 def load_data(path: str, label: str, drop_cols: list[str] = []) -> tuple[np.ndarray, np.ndarray]:
     df = pd.read_csv(path)
@@ -144,9 +147,12 @@ def fit_and_record(
         # convergence check on scaled-label SSE
         sse = float(np.sum((y_train - raw_pred) ** 2))
 
-        # map back to [0,1] for comparable metrics
-        prob_pred = tanh_pred_to_prob(raw_pred) if activation == "tanh" else raw_pred
-
+        if activation == "tanh":
+            prob_pred = tanh_pred_to_prob(raw_pred)
+        elif hasattr(model, "g_prime"):  # no-lineal, no tanh
+            prob_pred = raw_pred
+        else:  # lineal
+            prob_pred = linear_pred_to_prob(raw_pred)
         tr_mse    = mse(y, prob_pred)
         tr_bce    = bce_from_predictions(y, prob_pred)
         tr_recall = recall_score(y, prob_pred)
