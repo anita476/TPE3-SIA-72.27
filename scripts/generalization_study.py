@@ -60,24 +60,6 @@ def _present_binary_activations(df: pd.DataFrame) -> list[str]:
     return [a for a in ("tanh", "logistic") if a in vals]
 
 
-def _q2a_metricas_title(acts: list[str]) -> str:
-    if len(acts) == 0:
-        return "Comparación de métricas vs clasificador trivial"
-    if len(acts) == 1:
-        return (
-            f"Comparación de métricas — {LABEL_ACT[acts[0]]} vs clasificador trivial"
-        )
-    return "Comparación de métricas — Tanh vs Logística vs clasificador trivial"
-
-
-def _q2c_roc_title(present_acts: list[str]) -> str:
-    if len(present_acts) == 0:
-        return "Curva ROC"
-    if len(present_acts) == 1:
-        return f"Curva ROC — {LABEL_ACT[present_acts[0]]}"
-    return "Curva ROC — comparación de activaciones"
-
-
 def _fbeta(p: np.ndarray, r: np.ndarray, beta: float = BETA) -> np.ndarray:
     """Fβ score elemento a elemento. β=2 pondera recall el doble que precision."""
     b2 = beta ** 2
@@ -260,7 +242,6 @@ def plot_q2a_distribucion(split: pd.DataFrame, test_per: float) -> None:
             )
 
         ax.set_ylabel("Número de transacciones")
-        ax.set_title("Distribución de clases en el conjunto de datos")
         ax.set_ylim(0, n_total * 1.18)
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -278,10 +259,10 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
     baseline_acc = 1.0 - fraud_rate
 
     metrics = [
-        ("test_acc",             "Accuracy"),
-        ("best_precision_f2",    "Precisión (F2-ópt.)"),
-        ("best_recall_f2",       "Recall (F2-ópt.)"),
-        ("best_f2",              "F2 (opt.)"),
+        ("test_acc",       "Accuracy"),
+        ("best_precision", "Precisión (opt.)"),
+        ("best_recall",    "Recall (opt.)"),
+        ("best_f1",        "F1 (opt.)"),
     ]
     activations = _present_binary_activations(sub)
     if not activations:
@@ -325,7 +306,6 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
         ax.set_xticklabels([m[1] for m in metrics])
         ax.set_ylabel("Valor (0–1)")
         ax.set_ylim(0, 1.08)
-        ax.set_title(_q2a_metricas_title(activations))
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[act], alpha=0.7, label=LABEL_ACT[act])
@@ -376,27 +356,10 @@ def plot_q2a_pr_curve(roc: pd.DataFrame, test_per: float) -> None:
             ax.fill_between(recall_grid, np.maximum(mean - std, 0), mean + std,
                             color=COLORS_ACT[act], alpha=0.18, linewidth=0)
 
-        # baseline: no-skill = fraud_rate
-        # estimate from recall values: at threshold 0 recall=1, precision~fraud_rate
-        try:
-            sub_sum = roc[np.isclose(roc["test_per"].astype(float), test_per, rtol=0, atol=1e-9)]
-            # at threshold close to 0, recall~1, precision~fraud_rate
-            low_thr = sub_sum[sub_sum["threshold"] < 0.05]
-            if not low_thr.empty:
-                fr = float(low_thr["precision"].mean())
-            else:
-                fr = 0.11
-        except Exception:
-            fr = 0.11
-
-        ax.axhline(fr, color="#7f8c8d", linestyle="--", linewidth=1.4,
-                   label=f"Sin habilidad (tasa de fraude ≈ {fr * 100:.1f}%)")
-
-        ax.set_xlabel("Recall (sensibilidad)")
+        ax.set_xlabel("Recall")
         ax.set_ylabel("Precisión")
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1.05)
-        ax.set_title("Curva Precisión-Recall — métrica correcta para datos desbalanceados")
         ax.legend(fontsize=9, loc="upper right")
 
         _apply_style(fig, ax)
@@ -513,8 +476,6 @@ def plot_q2b_auc_line(split: pd.DataFrame, rec_tp: float) -> None:
 
         ax.set_xlabel("Porcentaje de test (%)")
         ax.set_ylabel("F2 óptimo (por semilla)")
-        ax.set_title("F2 óptimo vs porcentaje de test — media ± std sobre semillas\n"
-                     "(banda ancha = estimación poco confiable, β=2)")
         ax.legend(fontsize=9)
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -562,8 +523,6 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, rec_tp: float) -> None:
         ax.set_xticklabels(x_labels, fontsize=8.5)
         ax.set_xlabel("Porcentaje de test (%)")
         ax.set_ylabel("F2 óptimo (por semilla)")
-        ax.set_title("Distribución de F2 óptimo vs porcentaje de test\n"
-                     "(cajas más anchas = más incertidumbre, β=2)")
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[act], alpha=0.7, label=LABEL_ACT[act])
@@ -696,7 +655,6 @@ def plot_q2c_metrics_bar(
         ax.set_yticklabels(labels)
         ax.set_xlim(0, 1.12)
         ax.set_xlabel("Valor de métrica")
-        ax.set_title(f"Métricas del modelo final — {LABEL_ACT[best_act]} (umbral óptimo F2, β=2)")
         ax.legend(fontsize=9, loc="lower right")
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -739,8 +697,7 @@ def plot_q2c_umbral(roc: pd.DataFrame, best_act: str, rec_tp: float, best_thr: f
 
         ax.plot(thr_grid, mean_p,  color="#2980b9", linewidth=2,   label="Precisión")
         ax.plot(thr_grid, mean_r,  color="#27ae60", linewidth=2,   label="Recall")
-        ax.plot(thr_grid, mean_f2, color="#c0392b", linewidth=2.2, label=f"F{int(BETA)} (β={int(BETA)})")
-        ax.fill_between(thr_grid, mean_p, mean_r, alpha=0.07, color="#7f8c8d", label="Zona de trade-off")
+        ax.plot(thr_grid, mean_f2, color="#c0392b", linewidth=2.2, label=f"F2")
 
         ax.axvline(best_thr, color="#e67e22", linestyle="--", linewidth=1.8,
                    label=f"Umbral recomendado = {best_thr:.3f}")
@@ -748,8 +705,7 @@ def plot_q2c_umbral(roc: pd.DataFrame, best_act: str, rec_tp: float, best_thr: f
         ax.set_xlabel("Umbral de decisión")
         ax.set_ylabel("Valor de métrica")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1.05)
-        ax.set_title(f"Precisión / Recall / F2 vs umbral de decisión  [{LABEL_ACT[best_act]}, β=2]")
-        ax.legend(fontsize=9, loc="center right")
+        ax.legend(fontsize=9, loc="lower right")
         _apply_style(fig, ax)
         fig.tight_layout()
         _save(fig, "gen_study_q2c_umbral.png")
@@ -812,7 +768,6 @@ def plot_q2c_confusion_tabla(
         ax_cm.set_yticklabels(["Fraude", "No fraude"])
         ax_cm.set_xlabel("Predicción del modelo")
         ax_cm.set_ylabel("Clase real")
-        ax_cm.set_title(f"Matriz de confusión (umbral = {best_thr:.3f})")
         ax_cm.set_facecolor(STYLE["axes_bg"])
 
         # — Metrics table —
@@ -842,21 +797,14 @@ def plot_q2c_confusion_tabla(
                         transform=ax_tbl.transAxes, clip_on=False)
 
         ax_tbl.set_facecolor(STYLE["axes_bg"])
-        ax_tbl.set_title("Resumen del modelo final", color=STYLE["text_title"])
 
-        fig.suptitle(
-            f"Q2c — Recomendación al cliente: {LABEL_ACT[best_act]}, umbral = {best_thr:.3f}",
-            fontsize=11,
-        )
         fig.patch.set_facecolor(STYLE["figure_bg"])
         for spine in ax_cm.spines.values():
             spine.set_color(STYLE["text_axis"])
         ax_cm.tick_params(colors=STYLE["text_axis"])
         ax_cm.xaxis.label.set_color(STYLE["text_axis"])
         ax_cm.yaxis.label.set_color(STYLE["text_axis"])
-        ax_cm.title.set_color(STYLE["text_title"])
-        ax_tbl.title.set_color(STYLE["text_title"])
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.tight_layout()
         _save(fig, "gen_study_q2c_confusion_tabla.png")
 
 

@@ -300,7 +300,7 @@ def main():
     fig.tight_layout()
     p = out_dir / "learning_curves_mse.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
-    print(f"  saved → {p}")
+    print(f"  saved -> {p}")
     plt.close(fig)
 
     # ── Figure 2: BCE learning curves ──────────────────────────────────────
@@ -316,7 +316,7 @@ def main():
     fig.tight_layout()
     p = out_dir / "learning_curves_bce.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
-    print(f"  saved → {p}")
+    print(f"  saved -> {p}")
     plt.close(fig)
 
     # ── Figure 3: MSE vs BCE scatter (final values) ────────────────────────
@@ -343,7 +343,7 @@ def main():
     fig.tight_layout()
     p = out_dir / "final_mse_vs_bce.png"
     fig.savefig(p, dpi=150, bbox_inches="tight")
-    print(f"  saved → {p}")
+    print(f"  saved -> {p}")
     plt.close(fig)
 
     print("\nDone. All plots saved to:", out_dir)
