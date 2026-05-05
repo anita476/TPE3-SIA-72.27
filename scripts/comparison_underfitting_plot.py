@@ -6,10 +6,11 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-# ── aesthetics ─────────────────────────────────────────────────────────────
+BG_COLOR = "#f7f4ef"
+
 plt.rcParams.update({
-    "figure.facecolor":  "white",
-    "axes.facecolor":    "white",
+    "figure.facecolor":  BG_COLOR,
+    "axes.facecolor":    BG_COLOR,
     "axes.spines.top":   False,
     "axes.spines.right": False,
     "axes.grid":         True,
@@ -179,7 +180,12 @@ def plot_metric(
         ax.set_yscale("log")
         ax.yaxis.set_major_formatter(ticker.LogFormatterSciNotation())
 
-    ax.legend(loc="upper right", ncol=1)
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=2,
+        borderaxespad=0.0,
+    )
 
 
 def final_value_bars(ax: plt.Axes, all_configs: list[pd.DataFrame], col: str, title: str,
@@ -248,11 +254,17 @@ def main():
     parser = argparse.ArgumentParser(
         description="Plot MSE and BCE learning curves from run_comparison.py output."
     )
-    parser.add_argument("--linear",    default=None, help="Path to linear curves CSV")
-    parser.add_argument("--nonlinear", default=None, help="Path to non-linear curves CSV")
-    parser.add_argument("--log",       action="store_true", help="Use log scale on y-axis")
-    parser.add_argument("--no-std",    action="store_true", help="Hide ±1 std bands and error bars")
-    parser.add_argument("--out",       default="results/plots", help="Output directory")
+    parser.add_argument("--linear",     default=None,  help="Path to linear curves CSV")
+    parser.add_argument("--nonlinear",  default=None,  help="Path to non-linear curves CSV")
+    parser.add_argument("--log",        action="store_true", help="Use log scale on y-axis")
+    parser.add_argument("--no-std",     action="store_true", help="Hide ±1 std bands and error bars")
+    parser.add_argument("--out",        default="results/plots", help="Output directory")
+    parser.add_argument("--max-epochs", type=int, default=None,
+                        help="Only plot up to this epoch (inclusive). "
+                             "Silently ignored if the value exceeds the data range.")
+    parser.add_argument("--lr",         type=float, default=None, nargs="+",
+                        help="One or more learning-rate values to keep (e.g. --lr 0.01 0.001). "
+                             "Values absent from the data are silently skipped.")
     args = parser.parse_args()
 
     if not args.linear and not args.nonlinear:
@@ -281,41 +293,78 @@ def main():
         frames.append(df_nln)
 
     combined = pd.concat(frames, ignore_index=True)
+
+    # ── optional filters ────────────────────────────────────────────────────
+    if args.lr is not None:
+        requested = set(args.lr)
+        available = set(combined["lr"].unique())
+        matched   = requested & available
+        missing   = requested - available
+        if missing:
+            print(f"  [--lr] warning: the following LR values were not found in the data "
+                  f"and will be skipped: {sorted(missing)}")
+        if not matched:
+            parser.error("None of the requested --lr values exist in the data.")
+        combined = combined[combined["lr"].isin(matched)]
+        print(f"  [--lr] keeping: {sorted(matched)}")
+
+    if args.max_epochs is not None:
+        max_epoch_in_data = combined["epoch"].max()
+        if args.max_epochs > max_epoch_in_data:
+            print(f"  [--max-epochs] {args.max_epochs} exceeds data range "
+                  f"(max epoch = {max_epoch_in_data}); using all epochs.")
+        else:
+            combined = combined[combined["epoch"] <= args.max_epochs]
+            print(f"  [--max-epochs] plotting up to epoch {args.max_epochs}.")
+
+    # ── aggregate & split ───────────────────────────────────────────────────
     averaged = average_over_seeds(combined)
     all_cfgs = configs(averaged)
 
     print(f"\nPlotting {len(all_cfgs)} configurations (averaged over seeds).")
     build_color_map(all_cfgs)
 
-    # ── Figure 1: MSE learning curves ──────────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=False)
+    # ── Figure 1a: MSE learning curves ─────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig.suptitle("Training MSE — linear vs non-linear perceptron", fontsize=14, y=1.01)
-
-    plot_metric(axes[0], all_cfgs, "train_mse", "MSE", log_scale=args.log, show_std=show_std)
-    axes[0].set_title("Learning curves (MSE)")
-    annotate_underfitting(axes[0], all_cfgs, "train_mse")
-
-    final_value_bars(axes[1], all_cfgs, "train_mse", "Final MSE per config", show_std=show_std)
-
+    plot_metric(ax, all_cfgs, "train_mse", "MSE", log_scale=args.log, show_std=show_std)
+    ax.set_title("Learning curves (MSE)")
+    annotate_underfitting(ax, all_cfgs, "train_mse")
     fig.tight_layout()
     p = out_dir / "learning_curves_mse.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
     print(f"  saved → {p}")
     plt.close(fig)
 
-    # ── Figure 2: BCE learning curves ──────────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=False)
+    # ── Figure 1b: MSE final-value bars ────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(7, 5))
+    fig.suptitle("Training MSE — linear vs non-linear perceptron", fontsize=14, y=1.01)
+    final_value_bars(ax, all_cfgs, "train_mse", "Final MSE per config", show_std=show_std)
+    fig.tight_layout()
+    p = out_dir / "final_bars_mse.png"
+    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
+    print(f"  saved → {p}")
+    plt.close(fig)
+
+    # ── Figure 2a: BCE learning curves ─────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig.suptitle("Training BCE — linear vs non-linear perceptron", fontsize=14, y=1.01)
-
-    plot_metric(axes[0], all_cfgs, "train_bce", "BCE", log_scale=args.log, show_std=show_std)
-    axes[0].set_title("Learning curves (BCE)")
-    annotate_underfitting(axes[0], all_cfgs, "train_bce")
-
-    final_value_bars(axes[1], all_cfgs, "train_bce", "Final BCE per config", show_std=show_std)
-
+    plot_metric(ax, all_cfgs, "train_bce", "BCE", log_scale=args.log, show_std=show_std)
+    ax.set_title("Learning curves (BCE)")
+    annotate_underfitting(ax, all_cfgs, "train_bce")
     fig.tight_layout()
     p = out_dir / "learning_curves_bce.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
+    print(f"  saved → {p}")
+    plt.close(fig)
+
+    # ── Figure 2b: BCE final-value bars ────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(7, 5))
+    fig.suptitle("Training BCE — linear vs non-linear perceptron", fontsize=14, y=1.01)
+    final_value_bars(ax, all_cfgs, "train_bce", "Final BCE per config", show_std=show_std)
+    fig.tight_layout()
+    p = out_dir / "final_bars_bce.png"
+    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
     print(f"  saved → {p}")
     plt.close(fig)
 
@@ -339,10 +388,11 @@ def main():
     ax.set_xlabel("Final train MSE")
     ax.set_ylabel("Final train BCE")
     handles, labels_ = ax.get_legend_handles_labels()
-    ax.legend(handles, labels_, loc="upper left", fontsize=8, ncol=1)
+    ax.legend(handles, labels_, loc="upper center", bbox_to_anchor=(0.5, -0.15),
+              fontsize=8, ncol=2, borderaxespad=0.0)
     fig.tight_layout()
     p = out_dir / "final_mse_vs_bce.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
     print(f"  saved → {p}")
     plt.close(fig)
 
