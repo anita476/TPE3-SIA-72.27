@@ -1,0 +1,26 @@
+[
+  {
+    "name": "final_model",
+    "layers": [
+      784,
+      500,
+      256,
+      128,
+      10
+    ],
+    "learning_rate": 0.001,
+    "epochs": 500,
+    "epsilon": 1e-06,
+    "beta": 1.0,
+    "activation": "logistic",
+    "output_activation": "softmax",
+    "training_mode": "minibatch",
+    "batch_size": 16,
+    "weight_decay": 0.0,
+    "patience": 25,
+    "optimizer": "adam",
+    "initializer": "xavier",
+    "seeds": [1,2,3],
+    "min_delta": 0.0001
+  }
+]
