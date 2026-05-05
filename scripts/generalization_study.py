@@ -4,7 +4,7 @@ generalization_study.py — Estudio de generalización (Q2a / Q2b / Q2c)
 Genera 8 figuras respondiendo las tres preguntas del trabajo:
   Q2a (3 figs): distribución de clases, métricas vs baseline, curva PR
   Q2b (2 figs): PR-AUC vs porcentaje de test, boxplots de PR-AUC por porcentaje de test
-  Q2c (3 figs): curva ROC (diagnóstica), P/R/F1 vs umbral, matriz de confusión + tabla de métricas
+  Q2c (3 figs): curva ROC (diagnóstica), P/R/F2 vs umbral, matriz de confusión + tabla de métricas
 
 Uso:
     python scripts/generalization_study.py [--config configs/experiments_generalization.json]
@@ -37,6 +37,7 @@ PLOTS   = ROOT / "plots" / "ej1"
 
 COLORS_ACT = {"tanh": "#27ae60", "logistic": "#8e44ad"}
 LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logística"}
+BETA       = 2.0   # Fβ: β=2 penaliza más los fraudes no detectados que las falsas alarmas
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -77,6 +78,13 @@ def _q2c_roc_title(present_acts: list[str]) -> str:
     return "Curva ROC — comparación de activaciones"
 
 
+def _fbeta(p: np.ndarray, r: np.ndarray, beta: float = BETA) -> np.ndarray:
+    """Fβ score elemento a elemento. β=2 pondera recall el doble que precision."""
+    b2 = beta ** 2
+    denom = b2 * p + r
+    return np.where(denom == 0, 0.0, (1 + b2) * p * r / denom)
+
+
 def _pr_auc_from_curve(recall: np.ndarray, precision: np.ndarray) -> float:
     """AUC-PR robusta: ordena por recall y deduplica recalls repetidos."""
     r = np.asarray(recall, dtype=float)
@@ -112,6 +120,33 @@ def _pr_auc_by_seed(roc_rows: pd.DataFrame) -> pd.DataFrame:
                 {"activation": act, "test_per": float(tp), "seed": int(seed), "pr_auc": auc_pr}
             )
     return pd.DataFrame(out_rows)
+
+
+def _best_f2_by_seed(roc_rows: pd.DataFrame, beta: float = BETA) -> pd.DataFrame:
+    """Mejor Fβ (y su precisión/recall) por (activation, test_per, seed)."""
+    if roc_rows.empty:
+        return pd.DataFrame(columns=[
+            "activation", "test_per", "seed",
+            "best_f2", "best_recall_f2", "best_precision_f2",
+        ])
+    b2 = beta ** 2
+    out: list[dict] = []
+    for (act, tp, seed), grp in roc_rows.groupby(
+        ["activation", "test_per", "seed"], sort=False
+    ):
+        p = grp["precision"].to_numpy(float)
+        r = grp["recall"].to_numpy(float)
+        fb = _fbeta(p, r, beta)
+        best_idx = int(np.argmax(fb))
+        out.append({
+            "activation":        act,
+            "test_per":          float(tp),
+            "seed":              int(seed),
+            "best_f2":           float(fb[best_idx]),
+            "best_recall_f2":    float(r[best_idx]),
+            "best_precision_f2": float(p[best_idx]),
+        })
+    return pd.DataFrame(out)
 
 
 def _apply_style(fig: plt.Figure, *axes: plt.Axes) -> None:
@@ -243,10 +278,10 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
     baseline_acc = 1.0 - fraud_rate
 
     metrics = [
-        ("test_acc",       "Accuracy"),
-        ("best_precision", "Precisión (opt.)"),
-        ("best_recall",    "Recall (opt.)"),
-        ("best_f1",        "F1 (opt.)"),
+        ("test_acc",             "Accuracy"),
+        ("best_precision_f2",    "Precisión (F2-ópt.)"),
+        ("best_recall_f2",       "Recall (F2-ópt.)"),
+        ("best_f2",              "F2 (opt.)"),
     ]
     activations = _present_binary_activations(sub)
     if not activations:
@@ -383,7 +418,7 @@ def _recommend_test_per(
 ) -> float:
     """Devuelve el test_per recomendado (máximo _MAX_REC_TEST_PER).
 
-    Usa best_f1 (umbral óptimo por semilla) para medir rendimiento.
+    Usa best_f2 (umbral F2-óptimo por semilla, β=2) para medir rendimiento.
     Si la curva es plana (rango < gain_threshold), recomienda el menor test_per
     cuyo std cae por debajo de std_target — estabilidad de estimación.
     Si la curva no es plana, recomienda el punto anterior a la primera caída
@@ -399,8 +434,8 @@ def _recommend_test_per(
     std_per_tp: dict[float, float] = {}
     for tp in tp_vals:
         rows = split[np.isclose(split["test_per"].astype(float), tp, rtol=0, atol=1e-9)]
-        auc_per_tp[float(tp)] = float(rows["best_f1"].mean())
-        std_per_tp[float(tp)] = float(rows["best_f1"].std(ddof=0))
+        auc_per_tp[float(tp)] = float(rows["best_f2"].mean())
+        std_per_tp[float(tp)] = float(rows["best_f2"].std(ddof=0))
 
     auc_vals = list(auc_per_tp.values())
     curve_is_flat = (max(auc_vals) - min(auc_vals)) < gain_threshold
@@ -429,15 +464,15 @@ def _recommend_test_per(
 
 
 def _agg_by_tp(split: pd.DataFrame, activation: str) -> dict[float, tuple[float, float]]:
-    """Mean ± std best_f1 per test_per for one activation."""
+    """Mean ± std best_f2 per test_per for one activation."""
     out = {}
     for tp, grp in split[split["activation"] == activation].groupby("test_per"):
-        out[float(tp)] = (float(grp["best_f1"].mean()), float(grp["best_f1"].std(ddof=0)))
+        out[float(tp)] = (float(grp["best_f2"].mean()), float(grp["best_f2"].std(ddof=0)))
     return out
 
 
 def plot_q2b_auc_line(split: pd.DataFrame, rec_tp: float) -> None:
-    """F1 óptimo vs porcentaje de test — líneas con banda de error."""
+    """F2 óptimo vs porcentaje de test — líneas con banda de error."""
     present_acts = _present_binary_activations(split)
     markers = {"tanh": "o", "logistic": "s"}
 
@@ -477,9 +512,9 @@ def plot_q2b_auc_line(split: pd.DataFrame, rec_tp: float) -> None:
         )
 
         ax.set_xlabel("Porcentaje de test (%)")
-        ax.set_ylabel("F1 óptimo (por semilla)")
-        ax.set_title("F1 óptimo vs porcentaje de test — media ± std sobre semillas\n"
-                     "(banda ancha = estimación poco confiable)")
+        ax.set_ylabel("F2 óptimo (por semilla)")
+        ax.set_title("F2 óptimo vs porcentaje de test — media ± std sobre semillas\n"
+                     "(banda ancha = estimación poco confiable, β=2)")
         ax.legend(fontsize=9)
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -487,7 +522,7 @@ def plot_q2b_auc_line(split: pd.DataFrame, rec_tp: float) -> None:
 
 
 def plot_q2b_auc_boxplots(split: pd.DataFrame, rec_tp: float) -> None:
-    """Boxplots de F1 óptimo por porcentaje de test."""
+    """Boxplots de F2 óptimo por porcentaje de test."""
     tp_vals      = sorted(split["test_per"].dropna().unique())
     present_acts = _present_binary_activations(split)
     x_labels     = [f"{tp*100:.0f}%" for tp in tp_vals]
@@ -502,7 +537,7 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, rec_tp: float) -> None:
         for i, tp in enumerate(tp_vals):
             rows = split[np.isclose(split["test_per"].astype(float), tp, rtol=0, atol=1e-9)]
             for j, act in enumerate(present_acts):
-                vals = rows[rows["activation"] == act]["best_f1"].dropna().values
+                vals = rows[rows["activation"] == act]["best_f2"].dropna().values
                 if len(vals) == 0:
                     continue
                 pos = i + (j - 0.5) * (width + gap / 2) if n_acts > 1 else i
@@ -526,9 +561,9 @@ def plot_q2b_auc_boxplots(split: pd.DataFrame, rec_tp: float) -> None:
         ax.set_xticks(range(len(tp_vals)))
         ax.set_xticklabels(x_labels, fontsize=8.5)
         ax.set_xlabel("Porcentaje de test (%)")
-        ax.set_ylabel("F1 óptimo (por semilla)")
-        ax.set_title("Distribución de F1 óptimo vs porcentaje de test\n"
-                     "(cajas más anchas = más incertidumbre)")
+        ax.set_ylabel("F2 óptimo (por semilla)")
+        ax.set_title("Distribución de F2 óptimo vs porcentaje de test\n"
+                     "(cajas más anchas = más incertidumbre, β=2)")
 
         legend_handles = [
             mpatches.Patch(facecolor=COLORS_ACT[act], alpha=0.7, label=LABEL_ACT[act])
@@ -554,10 +589,10 @@ def _print_q2b(split: pd.DataFrame, rec_tp: float) -> None:
         rows = split[
             (split["activation"] == act) &
             np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
-        ]["best_f1"]
+        ]["best_f2"]
         if rows.empty:
             continue
-        print(f"  {LABEL_ACT[act]:10s} F1 opt = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
+        print(f"  {LABEL_ACT[act]:10s} F2 opt = {rows.mean():.4f} +- {rows.std(ddof=0):.4f}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -575,7 +610,7 @@ def _best_activation(
         rows = sub_tp[sub_tp["activation"] == act]
         if rows.empty:
             continue
-        m = float(rows["best_f1"].mean())
+        m = float(rows["best_f2"].mean())
         if m > best_val:
             best_val = m
             best_act = act
@@ -588,35 +623,38 @@ def _best_activation(
     return best_act, best_lr
 
 
-def _recommend_threshold(roc: pd.DataFrame, best_act: str, rec_tp: float) -> float:
-    """Umbral que maximiza F1 promediado sobre semillas."""
+def _recommend_threshold(
+    roc: pd.DataFrame, best_act: str, rec_tp: float, beta: float = BETA
+) -> float:
+    """Umbral que maximiza Fβ promediado sobre semillas (β=2 por defecto)."""
     rows = roc[
         (roc["activation"] == best_act) &
         np.isclose(roc["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
     ]
     thr_grid = np.linspace(0, 1, 200)
-    f1s: list[np.ndarray] = []
+    fb_curves: list[np.ndarray] = []
+    b2 = beta ** 2
     for _, grp in rows.groupby("seed"):
         g = grp.sort_values("threshold")
         t = g["threshold"].values
         p = g["precision"].values
         r = g["recall"].values
-        f1 = 2 * p * r / np.where((p + r) == 0, 1, p + r)
+        fb = np.where((b2 * p + r) == 0, 0.0, (1 + b2) * p * r / (b2 * p + r))
         _, idx = np.unique(t, return_index=True)
-        t, f1 = t[idx], f1[idx]
+        t, fb = t[idx], fb[idx]
         if len(t) < 2:
             continue
-        f1s.append(np.interp(thr_grid, t, f1, left=f1[0], right=f1[-1]))
-    if not f1s:
+        fb_curves.append(np.interp(thr_grid, t, fb, left=fb[0], right=fb[-1]))
+    if not fb_curves:
         return 0.5
-    mean_f1 = np.stack(f1s).mean(0)
-    return float(thr_grid[np.argmax(mean_f1)])
+    mean_fb = np.stack(fb_curves).mean(0)
+    return float(thr_grid[np.argmax(mean_fb)])
 
 
 def plot_q2c_metrics_bar(
     split: pd.DataFrame, best_act: str, rec_tp: float,
 ) -> None:
-    """Bar chart: precision, recall, F1, accuracy at optimal threshold vs trivial baseline."""
+    """Bar chart: precision, recall, F2, accuracy at F2-optimal threshold vs trivial baseline."""
     rows = split[
         (split["activation"] == best_act) &
         np.isclose(split["test_per"].astype(float), rec_tp, rtol=0, atol=1e-9)
@@ -629,10 +667,10 @@ def plot_q2c_metrics_bar(
     trivial_acc = 1.0 - fraud_rate
 
     metric_defs = [
-        ("F1 (óptimo)",        "best_f1",        True),
-        ("Recall (óptimo)",    "best_recall",     True),
-        ("Precisión (óptima)", "best_precision",  True),
-        ("Accuracy",           "test_acc",        False),
+        ("F2 (óptimo)",        "best_f2",             True),
+        ("Recall (óptimo)",    "best_recall_f2",       True),
+        ("Precisión (óptima)", "best_precision_f2",    True),
+        ("Accuracy",           "test_acc",             False),
     ]
 
     vals  = [float(rows[col].mean()) for _, col, _ in metric_defs]
@@ -658,7 +696,7 @@ def plot_q2c_metrics_bar(
         ax.set_yticklabels(labels)
         ax.set_xlim(0, 1.12)
         ax.set_xlabel("Valor de métrica")
-        ax.set_title(f"Métricas del modelo final — {LABEL_ACT[best_act]} (umbral óptimo F1)")
+        ax.set_title(f"Métricas del modelo final — {LABEL_ACT[best_act]} (umbral óptimo F2, β=2)")
         ax.legend(fontsize=9, loc="lower right")
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -672,20 +710,21 @@ def plot_q2c_umbral(roc: pd.DataFrame, best_act: str, rec_tp: float, best_thr: f
     ]
     thr_grid = np.linspace(0, 1, 200)
 
-    prec_list, rec_list, f1_list = [], [], []
+    b2 = BETA ** 2
+    prec_list, rec_list, f2_list = [], [], []
     for _, grp in rows.groupby("seed"):
         g = grp.sort_values("threshold")
         t  = g["threshold"].values
         pr = g["precision"].values
         rc = g["recall"].values
-        f1 = 2 * pr * rc / np.where((pr + rc) == 0, 1, pr + rc)
+        fb = np.where((b2 * pr + rc) == 0, 0.0, (1 + b2) * pr * rc / (b2 * pr + rc))
         _, idx = np.unique(t, return_index=True)
-        t, pr, rc, f1 = t[idx], pr[idx], rc[idx], f1[idx]
+        t, pr, rc, fb = t[idx], pr[idx], rc[idx], fb[idx]
         if len(t) < 2:
             continue
         prec_list.append(np.interp(thr_grid, t, pr, left=pr[0], right=pr[-1]))
         rec_list.append(np.interp(thr_grid, t, rc, left=rc[0], right=rc[-1]))
-        f1_list.append(np.interp(thr_grid, t, f1, left=f1[0], right=f1[-1]))
+        f2_list.append(np.interp(thr_grid, t, fb, left=fb[0], right=fb[-1]))
 
     if not prec_list:
         print("  [Q2c-umbral] Sin curvas disponibles.")
@@ -693,14 +732,14 @@ def plot_q2c_umbral(roc: pd.DataFrame, best_act: str, rec_tp: float, best_thr: f
 
     mean_p  = np.stack(prec_list).mean(0)
     mean_r  = np.stack(rec_list).mean(0)
-    mean_f1 = np.stack(f1_list).mean(0)
+    mean_f2 = np.stack(f2_list).mean(0)
 
     with plt.rc_context(PLOT_RC):
         fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.82, FIG_SIZE[1] * 0.88))
 
         ax.plot(thr_grid, mean_p,  color="#2980b9", linewidth=2,   label="Precisión")
         ax.plot(thr_grid, mean_r,  color="#27ae60", linewidth=2,   label="Recall")
-        ax.plot(thr_grid, mean_f1, color="#c0392b", linewidth=2.2, label="F1")
+        ax.plot(thr_grid, mean_f2, color="#c0392b", linewidth=2.2, label=f"F{int(BETA)} (β={int(BETA)})")
         ax.fill_between(thr_grid, mean_p, mean_r, alpha=0.07, color="#7f8c8d", label="Zona de trade-off")
 
         ax.axvline(best_thr, color="#e67e22", linestyle="--", linewidth=1.8,
@@ -709,7 +748,7 @@ def plot_q2c_umbral(roc: pd.DataFrame, best_act: str, rec_tp: float, best_thr: f
         ax.set_xlabel("Umbral de decisión")
         ax.set_ylabel("Valor de métrica")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1.05)
-        ax.set_title(f"Precisión / Recall / F1 vs umbral de decisión  [{LABEL_ACT[best_act]}]")
+        ax.set_title(f"Precisión / Recall / F2 vs umbral de decisión  [{LABEL_ACT[best_act]}, β=2]")
         ax.legend(fontsize=9, loc="center right")
         _apply_style(fig, ax)
         fig.tight_layout()
@@ -734,12 +773,12 @@ def plot_q2c_confusion_tabla(
 
     n_test     = float(rows["n_test"].mean())
     fraud_rate = float(rows["fraud_rate_test"].mean())
-    # Use the per-seed F1-optimal metrics (best_recall / best_precision) so that
-    # the confusion matrix numbers are consistent with the best_thr annotation.
-    recall_thr = float(rows["best_recall"].mean())
-    prec_thr   = float(rows["best_precision"].mean())
-    f1_m       = float(rows["best_f1"].mean())
-    f1_s       = float(rows["best_f1"].std(ddof=0))
+    # Use the per-seed F2-optimal metrics so that the confusion matrix numbers
+    # are consistent with the F2-optimal threshold (β=2, recall-weighted).
+    recall_thr = float(rows["best_recall_f2"].mean())
+    prec_thr   = float(rows["best_precision_f2"].mean())
+    f2_m       = float(rows["best_f2"].mean())
+    f2_s       = float(rows["best_f2"].std(ddof=0))
     acc_m      = float(rows["test_acc"].mean())
 
     P  = round(n_test * fraud_rate)
@@ -781,9 +820,9 @@ def plot_q2c_confusion_tabla(
         table_data = [
             ("Modelo",              LABEL_ACT[best_act]),
             ("Learning rate",       f"{best_lr:g}"),
-            ("F1 óptimo (media)",   f"{f1_m:.4f} ± {f1_s:.4f}"),
-            ("Precisión (F1-ópt.)", f"{prec_thr:.4f}"),
-            ("Recall (F1-ópt.)",    f"{recall_thr:.4f}"),
+            ("F2 óptimo (media)",   f"{f2_m:.4f} ± {f2_s:.4f}"),
+            ("Precisión (F2-ópt.)", f"{prec_thr:.4f}"),
+            ("Recall (F2-ópt.)",    f"{recall_thr:.4f}"),
             ("Accuracy",            f"{acc_m:.4f}"),
             ("Umbral recomendado",  f"{best_thr:.3f}"),
             ("Tasa de fraude",      f"{fraud_rate * 100:.1f}%"),
@@ -830,11 +869,11 @@ def _print_q2c(split: pd.DataFrame, roc: pd.DataFrame,
     print("\n-- Q2c ----------------------------------------------------")
     print(f"Mejor modelo: {LABEL_ACT[best_act]} (lr={best_lr:g})")
     if not rows.empty:
-        print(f"  F1 opt.      = {rows['best_f1'].mean():.4f} +- {rows['best_f1'].std(ddof=0):.4f}")
-        print(f"  Recall opt.  = {rows['best_recall'].mean() * 100:.1f}%  (fraude detectado)")
-        print(f"  Precision opt. = {rows['best_precision'].mean() * 100:.1f}%")
+        print(f"  F2 opt.      = {rows['best_f2'].mean():.4f} +- {rows['best_f2'].std(ddof=0):.4f}")
+        print(f"  Recall opt.  = {rows['best_recall_f2'].mean() * 100:.1f}%  (fraude detectado)")
+        print(f"  Precision opt. = {rows['best_precision_f2'].mean() * 100:.1f}%")
         print(f"  Accuracy     = {rows['test_acc'].mean():.4f} +- {rows['test_acc'].std(ddof=0):.4f}")
-        print(f"  Umbral recomendado: {best_thr:.3f} (maximiza F1 promediado sobre semillas)")
+        print(f"  Umbral recomendado: {best_thr:.3f} (maximiza F2 promediado sobre semillas, β=2)")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -901,6 +940,21 @@ def main() -> None:
 
     if split.empty:
         raise SystemExit("Sin datos tras filtrar. Corre el experiment_runner con este config primero.")
+
+    # Augmentar split con métricas F2-óptimas calculadas desde curvas P/R por semilla
+    f2_df = _best_f2_by_seed(roc)
+    if not f2_df.empty:
+        split = split.merge(
+            f2_df[["activation", "test_per", "seed",
+                   "best_f2", "best_recall_f2", "best_precision_f2"]],
+            on=["activation", "test_per", "seed"],
+            how="left",
+        )
+    else:
+        print("  [AVISO] No se pudo calcular best_f2 desde roc; usando best_f1 como fallback.")
+        split["best_f2"]           = split["best_f1"]
+        split["best_recall_f2"]    = split["best_recall"]
+        split["best_precision_f2"] = split["best_precision"]
 
     # Determinar el mejor modelo primero (resuelve issue de umbral: best_thr disponible para todo)
     rec_tp   = _recommend_test_per(split)

@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.ticker import LogLocator
 import numpy as np
 import pandas as pd
 
@@ -39,6 +40,7 @@ DEFAULT_ROC = RESULTS / "linear_vs_nonlinear_roc.csv"
 COLORS_ACT = {"tanh": "#27ae60", "logistic": "#8e44ad"}
 LABEL_ACT  = {"tanh": "Tanh", "logistic": "Logística"}
 MARKERS    = {"tanh": "o", "logistic": "s"}
+BETA       = 2.0   # Fβ: β=2 penaliza más los fraudes no detectados que las falsas alarmas
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,6 +111,13 @@ def _std0(s: pd.Series) -> float:
     return float(s.std(ddof=0))
 
 
+def _fbeta(p: np.ndarray, r: np.ndarray, beta: float = BETA) -> np.ndarray:
+    """Fβ score elemento a elemento. β=2 pondera recall el doble que precision."""
+    b2 = beta ** 2
+    denom = b2 * p + r
+    return np.where(denom == 0, 0.0, (1 + b2) * p * r / denom)
+
+
 def _pr_auc_from_curve(recall: np.ndarray, precision: np.ndarray) -> float:
     r = np.asarray(recall, dtype=float)
     p = np.asarray(precision, dtype=float)
@@ -126,6 +135,42 @@ def _pr_auc_from_curve(recall: np.ndarray, precision: np.ndarray) -> float:
     if r.size < 2:
         return float("nan")
     return float(np.trapezoid(p, r))
+
+
+def _best_f2_seed_table(
+    roc_df: pd.DataFrame,
+    test_per: float | None,
+    beta: float = BETA,
+) -> pd.DataFrame:
+    """Mejor Fβ por (activation, lr, seed) desde curvas P/R/threshold."""
+    if roc_df.empty:
+        return pd.DataFrame(columns=["activation", "lr", "seed", "best_f2"])
+    work = roc_df.copy()
+    if "activation" in work.columns:
+        work["activation"] = work["activation"].map(_norm_act)
+    work = work[
+        (work["model_type"].astype(str) == "non-linear")
+        & work["activation"].isin(["tanh", "logistic"])
+    ]
+    if "no_split" in work.columns:
+        ns = work["no_split"].map(_is_no_split)
+        work = work[ns] if test_per is None else work[~ns]
+    if test_per is not None and "test_per" in work.columns:
+        work = work[np.isclose(work["test_per"].astype(float), test_per, rtol=0, atol=1e-9)]
+    if work.empty:
+        return pd.DataFrame(columns=["activation", "lr", "seed", "best_f2"])
+    b2 = beta ** 2
+    out: list[dict] = []
+    for (act, lr, seed), grp in work.groupby(["activation", "lr", "seed"], sort=False):
+        p = grp["precision"].to_numpy(float)
+        r = grp["recall"].to_numpy(float)
+        fb = _fbeta(p, r, beta)
+        best_idx = int(np.argmax(fb))
+        out.append({
+            "activation": act, "lr": float(lr),
+            "seed": int(seed), "best_f2": float(fb[best_idx]),
+        })
+    return pd.DataFrame(out)
 
 
 def _pr_auc_seed_table(
@@ -201,7 +246,7 @@ def _aggregate(df: pd.DataFrame, pr_auc_seed: pd.DataFrame | None = None) -> pd.
     df["gen_gap"] = df["train_f1_at_threshold"] - df["f1_at_threshold"]
 
     cols = [
-        "best_f1", "best_recall", "best_precision",
+        "best_f1", "best_f2", "best_recall", "best_precision",
         "final_train_mse", "gen_gap",
         "recall_at_threshold", "precision_at_threshold",
         "f1_at_threshold", "fpr_at_threshold",
@@ -259,26 +304,30 @@ def _best_lr(agg: pd.DataFrame, act: str, converge_tol: float = 0.02) -> float |
       1. Convergence gate — keep only LRs whose mean final train MSE is within
          `converge_tol` (2 %) of the minimum.  Filters out LRs that are too low
          (model not trained enough) or too high (oscillating / diverging).
-      2. Among converged LRs, pick the one with the highest mean test F1
-         (best_f1_mean) — the primary deployment metric.
+      2. Among converged LRs, pick the one with the highest mean test F2
+         (best_f2_mean, β=2) — the primary deployment metric for fraud detection.
 
-    Falls back to argmax best_f1 if train MSE data is unavailable.
+    Falls back to argmax best_f2 (then best_f1) if data is unavailable.
     """
     sub = agg[agg["activation"] == act]
 
-    if "final_train_mse_mean" in sub.columns and "best_f1_mean" in sub.columns:
+    if "final_train_mse_mean" in sub.columns and "best_f2_mean" in sub.columns:
         mse_sub = sub.dropna(subset=["final_train_mse_mean"])
         if not mse_sub.empty:
             min_mse = float(mse_sub["final_train_mse_mean"].min())
             converged = mse_sub[mse_sub["final_train_mse_mean"] <= min_mse * (1 + converge_tol)]
             if converged.empty:
                 converged = mse_sub
-            f1_sub = converged.dropna(subset=["best_f1_mean"])
-            if not f1_sub.empty:
-                return float(f1_sub.loc[f1_sub["best_f1_mean"].idxmax(), "lr"])
+            f2_sub = converged.dropna(subset=["best_f2_mean"])
+            if not f2_sub.empty:
+                return float(f2_sub.loc[f2_sub["best_f2_mean"].idxmax(), "lr"])
             return float(converged.loc[converged["final_train_mse_mean"].idxmin(), "lr"])
 
-    # fallback: argmax best F1
+    # fallback: argmax best F2
+    f2_sub = sub.dropna(subset=["best_f2_mean"])
+    if not f2_sub.empty:
+        return float(f2_sub.loc[f2_sub["best_f2_mean"].idxmax(), "lr"])
+    # second fallback: argmax best F1
     f1_sub = sub.dropna(subset=["best_f1_mean"])
     if not f1_sub.empty:
         return float(f1_sub.loc[f1_sub["best_f1_mean"].idxmax(), "lr"])
@@ -375,13 +424,12 @@ def _plot_sweep_panel(
 
 def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: int) -> None:
     panels = [
-        ("best_recall_mean", "best_recall_std", "Recall optimo (test)",      "Recall optimo en test",          False, False),
-        ("best_f1_mean",     "best_f1_std",     "F1 optimo (test)",          "F1 optimo en test",              False, False),
-        ("gen_gap_mean",     "gen_gap_std",     "Brecha de generalizacion",  "Brecha (F1 train - F1 test)",    False, False),
+        ("best_f2_mean", "best_f2_std", "F2 optimo (test)", "F2 optimo en test  [β=2]", False, False),
     ]
 
     with plt.rc_context(PLOT_RC):
-        fig, axes = plt.subplots(1, 3, figsize=(FIG_SIZE[0] * 1.2, FIG_SIZE[1] * 0.82))
+        fig, axes = plt.subplots(1, 1, figsize=(FIG_SIZE[0] * 0.55, FIG_SIZE[1] * 0.82))
+        axes = [axes]
 
         for ax, (mc, sc, ylabel, title, log_y, minimize) in zip(axes, panels):
             _plot_sweep_panel(ax, agg, mc, sc, ylabel, title, best_lrs,
@@ -410,6 +458,46 @@ def plot_lr_sweep(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds:
         _save(fig, "tanh_vs_logistica_lr_sweep.png")
 
 
+def plot_brecha(agg: pd.DataFrame, best_lrs: dict[str, float | None], n_seeds: int) -> None:
+    """Figura separada: brecha de generalización (F1 train − F1 test) vs LR."""
+    with plt.rc_context(PLOT_RC):
+        fig, ax = plt.subplots(figsize=(FIG_SIZE[0] * 0.62, FIG_SIZE[1] * 0.82))
+
+        _plot_sweep_panel(
+            ax, agg,
+            mean_col="gen_gap_mean", std_col="gen_gap_std",
+            ylabel="Brecha de generalizacion",
+            title="Brecha (F1 train − F1 test)",
+            best_lrs=best_lrs,
+            log_y=False, minimize=False,
+        )
+
+        # Línea de referencia: sin sobreajuste
+        ax.axhline(0, color="#7f8c8d", linestyle=":", linewidth=1.4, label="Sin sobreajuste")
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(fontsize=8, loc="best")
+
+        present = [a for a in ["tanh", "logistic"] if a in agg["activation"].values]
+        extra_handles = [
+            plt.Line2D([0], [0], color=COLORS_ACT[a], linestyle="--", linewidth=1.2,
+                       label=f"Mejor LR {LABEL_ACT[a]} = {best_lrs[a]:g}")
+            for a in present if best_lrs.get(a) is not None
+        ]
+        if extra_handles:
+            fig.legend(handles=extra_handles, loc="lower center", ncol=len(extra_handles),
+                       fontsize=8.5, frameon=True, bbox_to_anchor=(0.5, -0.06))
+
+        fig.suptitle(
+            f"Brecha de generalizacion vs learning rate  |  banda = +-1 std ({n_seeds} semillas)",
+            fontsize=10,
+        )
+        _apply_style(fig, ax)
+        fig.tight_layout(rect=[0, 0.08, 1, 0.96])
+        _save(fig, "tanh_vs_logistica_brecha.png")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Figure 2 — Head-to-head comparison at best LRs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -423,7 +511,7 @@ def plot_comparacion(
     # (label, mean_col, std_col, higher_is_better)
     metric_defs = [
         ("Recall óptimo",   "best_recall_mean",         "best_recall_std",         True),
-        ("F1 óptimo",       "best_f1_mean",             "best_f1_std",             True),
+        ("F2 óptimo",       "best_f2_mean",             "best_f2_std",             True),
         ("Especificidad",   "fpr_at_threshold_mean",    "fpr_at_threshold_std",    False),  # shown as 1-FPR
     ]
     # keep only metrics present in agg
@@ -503,11 +591,11 @@ def plot_comparacion(
             winner_metric = max(r0, r1)
             metric_line = f"Recall óptimo = {winner_metric:.4f}"
             winner_lr = best_lrs[winner_act]
-            f1_val = vals[winner_act].get("F1 óptimo", (0, 0))[0]
+            f2_val = vals[winner_act].get("F2 óptimo", (0, 0))[0]
             ax.text(0.98, 0.02,
                     f"Mejor modelo:\n{LABEL_ACT[winner_act]} (lr={winner_lr:g})"
                     f"\n{metric_line}"
-                    f"\nF1 óptimo = {f1_val:.4f}",
+                    f"\nF2 óptimo = {f2_val:.4f}",
                     transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5,
                     fontweight="bold", color=COLORS_ACT[winner_act],
                     bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
@@ -652,7 +740,13 @@ def plot_convergencia_todos_lrs(curves_df: pd.DataFrame, test_per: float | None 
 
     present = [a for a in ["tanh", "logistic"] if a in set(work["activation"])]
     with plt.rc_context(PLOT_RC):
-        fig, axes = plt.subplots(1, len(present), figsize=(FIG_SIZE[0] * 1.3, FIG_SIZE[1] * 0.9), squeeze=False)
+        fig, axes = plt.subplots(
+            1,
+            len(present),
+            figsize=(FIG_SIZE[0] * 1.3, FIG_SIZE[1] * 0.9),
+            squeeze=False,
+            sharey=True,
+        )
         ax_list = axes.ravel().tolist()
 
         for i, act in enumerate(present):
@@ -690,11 +784,16 @@ def plot_convergencia_todos_lrs(curves_df: pd.DataFrame, test_per: float | None 
 
             ax.set_yscale("log")
             ax.set_xlabel("Epoca")
-            ax.set_ylabel("Train MSE (escala log)")
+            if i == 0:
+                ax.set_ylabel("Train MSE (escala log)")
+                # Más marcas en escala log (1, 2, 5 por década)
+                ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
             ax.set_title(f"{LABEL_ACT[act]} -- todos los LR", fontsize=10)
             ax.legend(fontsize=7.2, ncol=2, loc="upper right", framealpha=0.9)
 
         _apply_style(fig, *ax_list)
+        for ax in ax_list[1:]:
+            ax.tick_params(axis="y", left=False, labelleft=False)
         fig.suptitle("Convergencia por activacion con todos los learning rates", fontsize=10.5)
         fig.tight_layout(rect=[0, 0, 1, 0.96])
         _save(fig, "tanh_vs_logistica_convergencia_todos_lrs.png")
@@ -833,13 +932,13 @@ def _print_summary(agg: pd.DataFrame, best_lrs: dict[str, float | None], criteri
             continue
         mse_m = float(row["final_train_mse_mean"].iloc[0]) if "final_train_mse_mean" in row.columns else float("nan")
         rec_m = float(row["best_recall_mean"].iloc[0]) if "best_recall_mean" in row.columns else float("nan")
-        f1_m  = float(row["best_f1_mean"].iloc[0])    if "best_f1_mean"  in row.columns else float("nan")
-        print(f"  {LABEL_ACT[act]:12s}: lr = {lr:g}   (train_mse={mse_m:.6f}  recall={rec_m:.4f}  F1={f1_m:.4f})")
+        f2_m  = float(row["best_f2_mean"].iloc[0])    if "best_f2_mean"  in row.columns else float("nan")
+        print(f"  {LABEL_ACT[act]:12s}: lr = {lr:g}   (train_mse={mse_m:.6f}  recall={rec_m:.4f}  F2={f2_m:.4f})")
 
     print("\n--- Comparacion directa al mejor LR ---")
     metric_defs = [
         ("Recall optimo",  "best_recall_mean",         "best_recall_std",         True),
-        ("F1 optimo",      "best_f1_mean",             "best_f1_std",             True),
+        ("F2 optimo",      "best_f2_mean",             "best_f2_std",             True),
         ("FPR@umbral",     "fpr_at_threshold_mean",    "fpr_at_threshold_std",    False),
     ]
     metric_defs = [(l, mc, sc, h) for l, mc, sc, h in metric_defs if mc in agg.columns]
@@ -963,12 +1062,24 @@ def main() -> None:
     n_seeds = df["seed"].nunique()
     print(f"Activaciones: {present}  |  LRs por activacion: {df.groupby('activation')['lr'].nunique().to_dict()}  |  Semillas: {n_seeds}")
 
-    pr_seed = pd.DataFrame(columns=["activation", "lr", "seed", "pr_auc"])
+    pr_seed   = pd.DataFrame(columns=["activation", "lr", "seed", "pr_auc"])
+    f2_seed   = pd.DataFrame(columns=["activation", "lr", "seed", "best_f2"])
     if roc_path.is_file():
-        roc_df = pd.read_csv(roc_path)
+        roc_df  = pd.read_csv(roc_path)
         pr_seed = _pr_auc_seed_table(roc_df, test_per=test_per)
+        f2_seed = _best_f2_seed_table(roc_df, test_per=test_per)
+    # Join best_f2 into df before aggregation
+    if not f2_seed.empty:
+        df = df.merge(
+            f2_seed[["activation", "lr", "seed", "best_f2"]],
+            on=["activation", "lr", "seed"],
+            how="left",
+        )
+    else:
+        print("  [AVISO] No se pudo calcular best_f2 desde roc; usando best_f1 como fallback.")
+        df["best_f2"] = df["best_f1"]
     agg = _aggregate(df, pr_auc_seed=pr_seed)
-    criterion_label = "mejor F1 optimo en test entre LRs convergidos (MSE ≤ min+2%)"
+    criterion_label = "mejor F2 optimo en test entre LRs convergidos (MSE <= min+2%, beta=2)"
     best_lrs: dict[str, float | None] = {"tanh": None, "logistic": None}
     curves_df: pd.DataFrame | None = None
     if curves_path.is_file():
@@ -989,8 +1100,8 @@ def main() -> None:
     print("\n[Fig 1] LR sweep...")
     plot_lr_sweep(agg, best_lrs, n_seeds)
 
-    print("[Fig 2] Comparacion final...")
-    plot_comparacion(agg, best_lrs)
+    print("[Fig 1b] Brecha de generalizacion...")
+    plot_brecha(agg, best_lrs, n_seeds)
 
     if curves_df is not None:
         print("[Fig 5] Last MSE por LR...")
