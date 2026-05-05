@@ -28,14 +28,6 @@ ACTIVATIONS = {
 
 
 def _recall_score(y_true: np.ndarray, y_pred_prob: np.ndarray, threshold: float = 0.5) -> float:
-    """
-    Recall for the positive class (fraud = 1).
-    recall = TP / (TP + FN)
-
-    For tanh outputs in (-1, 1) the caller is responsible for mapping
-    predictions back to [0, 1] BEFORE calling this function.
-    Returns 0.0 if there are no positive samples.
-    """
     y_pred = (y_pred_prob >= threshold).astype(int)
     tp = int(np.sum((y_pred == 1) & (y_true == 1)))
     fn = int(np.sum((y_pred == 0) & (y_true == 1)))
@@ -61,9 +53,7 @@ class SimpleNonLinearPerceptron(Perceptron):
 
     def _pred_to_prob(self, y_pred: np.ndarray) -> np.ndarray:
         """
-        Map raw predictions to [0, 1] probability space.
-        tanh outputs live in (-1, 1) → apply inverse label scaling: (p + 1) / 2.
-        All other activations already output values in [0, 1].
+        Map raw predictions to [0, 1] probability space
         """
         if self.activation_name == 'tanh':
             return (y_pred + 1.0) / 2.0
@@ -71,9 +61,6 @@ class SimpleNonLinearPerceptron(Perceptron):
 
     def fit(self, X, y, X_val=None, y_val=None):
         """
-        X, y         — training data (labels always in {0, 1})
-        X_val, y_val — optional validation data.
-
         For tanh, labels are internally scaled to {-1, +1} during training.
         All metrics (MSE, recall) are computed on the original {0, 1} scale.
         """
@@ -85,7 +72,7 @@ class SimpleNonLinearPerceptron(Perceptron):
         self.train_recall_history_: list[float] = []
         self.test_recall_history_:  list[float] = []
 
-        # Scale labels for tanh: 0 → -1, 1 → +1
+        # Scale labels for tanh
         y_train = (2.0 * y - 1.0) if self.activation_name == 'tanh' else y
 
         compute_val = X_val is not None and y_val is not None
@@ -120,7 +107,6 @@ class SimpleNonLinearPerceptron(Perceptron):
                 self.test_mse_history_.append(val_mse)
                 self.test_recall_history_.append(val_recall)
 
-            # Convergence check on scaled-label SSE (mirrors original behaviour)
             total_error = float(np.sum((y_train - raw_pred) ** 2))
             print(f"Epoch {epoch + 1}: total error = {total_error:.4f}  recall = {train_recall:.4f}")
             if total_error < self.epsilon:

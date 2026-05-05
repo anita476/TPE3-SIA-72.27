@@ -8,7 +8,7 @@ def _activation_identity(value):
 
 def _recall_score(y_true: np.ndarray, y_pred_prob: np.ndarray, threshold: float = 0.5) -> float:
     """
-    Recall for the positive class (fraud = 1).
+    Recall for the positive class
     recall = TP / (TP + FN)
     Returns 0.0 if there are no positive samples.
     """
@@ -24,12 +24,6 @@ class SimpleLinearPerceptron(Perceptron):
         self.epsilon = epsilon
 
     def fit(self, X, y, X_val=None, y_val=None):
-        """
-        X, y         training data
-        X_val, y_val optional validation data for test MSE / recall tracking.
-                     If provided, test_mse_history_ and test_recall_history_
-                     are populated each epoch.
-        """
         n_samples, n_features = X.shape
 
         self._initialize_parameters(n_features)
