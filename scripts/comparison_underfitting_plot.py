@@ -6,7 +6,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-BG_COLOR = "#f7f4ef"
+BG_COLOR = "#fff5ec"
 
 plt.rcParams.update({
     "figure.facecolor":  BG_COLOR,
@@ -80,8 +80,6 @@ def build_color_map(all_configs: list) -> None:
             _COLOR_MAP[(family, lr)] = _hex_shade(base, factor)
 
 
-# ── helpers ─────────────────────────────────────────────────────────────────
-
 def palette_key(row: pd.Series) -> str:
     """Return the family key (used for linestyle and as base-color selector)."""
     if row["model"] == "linear":
@@ -136,9 +134,6 @@ def configs(df: pd.DataFrame) -> list[pd.DataFrame]:
     group_cols = ["model", "activation", "lr"]
     return [grp.sort_values("epoch") for _, grp in df.groupby(group_cols, sort=False)]
 
-
-# ── plotting ────────────────────────────────────────────────────────────────
-
 def plot_metric(
     ax: plt.Axes,
     all_configs: list[pd.DataFrame],
@@ -163,7 +158,7 @@ def plot_metric(
             label=label, alpha=0.9,
         )
 
-        # ±1 std shaded band — only rendered when std > 0 (i.e. multiple seeds)
+        # std  only rendered when std > 0
         if show_std and std_col in cfg.columns:
             std = cfg[std_col].fillna(0)
             if std.abs().max() > 0:
@@ -191,11 +186,6 @@ def plot_metric(
 def final_value_bars(ax: plt.Axes, all_configs: list[pd.DataFrame], col: str, title: str,
                      show_std: bool = True, sort_descending: bool = False):
     """Bar chart of the final-epoch value for each config, with optional std error bars.
-
-    Parameters
-    ----------
-    sort_descending : bool
-        If True, bars are ordered from highest to lowest final value.
     """
     std_col = f"{col}_std"
     labels, values, errors, colors = [], [], [], []
@@ -262,7 +252,6 @@ def annotate_underfitting(ax: plt.Axes, all_configs: list[pd.DataFrame], col: st
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(
         description="Plot MSE and BCE learning curves from run_comparison.py output."
@@ -336,11 +325,10 @@ def main():
     print(f"\nPlotting {len(all_cfgs)} configurations (averaged over seeds).")
     build_color_map(all_cfgs)
 
-    # ── Figure 1a: MSE learning curves ─────────────────────────────────────
     fig, ax = plt.subplots(figsize=(8, 5))
-    fig.suptitle("Training MSE — linear vs non-linear perceptron", fontsize=14, y=1.01)
+    fig.suptitle("MSE en entrenamiento — perceptrón lineal vs no-lineal", fontsize=14, y=1.01)
     plot_metric(ax, all_cfgs, "train_mse", "MSE", log_scale=args.log, show_std=show_std)
-    ax.set_title("Learning curves (MSE)")
+    ax.set_title("Curvas de aprendizaje (MSE)")
     annotate_underfitting(ax, all_cfgs, "train_mse")
     fig.tight_layout()
     p = out_dir / "learning_curves_mse.png"
@@ -348,65 +336,15 @@ def main():
     print(f"  saved → {p}")
     plt.close(fig)
 
-    # ── Figure 1b: MSE final-value bars ────────────────────────────────────
     fig, ax = plt.subplots(figsize=(7, 5))
-    fig.suptitle("Training MSE — linear vs non-linear perceptron", fontsize=14, y=1.01)
-    final_value_bars(ax, all_cfgs, "train_mse", "Final MSE per config", show_std=show_std, sort_descending=True)
+    fig.suptitle("MSE en entrenamiento — perceptrón lineal vs no-lineal", fontsize=14, y=1.01)
+    final_value_bars(ax, all_cfgs, "train_mse", "MSE final por config", show_std=show_std, sort_descending=True)
     fig.tight_layout()
     p = out_dir / "final_bars_mse.png"
     fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
     print(f"  saved → {p}")
     plt.close(fig)
 
-    # ── Figure 2a: BCE learning curves ─────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(8, 5))
-    fig.suptitle("Training BCE — linear vs non-linear perceptron", fontsize=14, y=1.01)
-    plot_metric(ax, all_cfgs, "train_bce", "BCE", log_scale=args.log, show_std=show_std)
-    ax.set_title("Learning curves (BCE)")
-    annotate_underfitting(ax, all_cfgs, "train_bce")
-    fig.tight_layout()
-    p = out_dir / "learning_curves_bce.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
-    print(f"  saved → {p}")
-    plt.close(fig)
-
-    # ── Figure 2b: BCE final-value bars ────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(7, 5))
-    fig.suptitle("Training BCE — linear vs non-linear perceptron", fontsize=14, y=1.01)
-    final_value_bars(ax, all_cfgs, "train_bce", "Final BCE per config", show_std=show_std)
-    fig.tight_layout()
-    p = out_dir / "final_bars_bce.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
-    print(f"  saved → {p}")
-    plt.close(fig)
-
-    # ── Figure 3: MSE vs BCE scatter (final values) ────────────────────────
-    fig, ax = plt.subplots(figsize=(7, 5))
-    ax.set_title("Final MSE vs final BCE per config", pad=10)
-
-    for cfg in all_cfgs:
-        if "train_mse" not in cfg.columns or "train_bce" not in cfg.columns:
-            continue
-        row0  = cfg.iloc[-1]
-        key   = palette_key(row0)
-        label = group_label(row0)
-        ax.scatter(
-            row0["train_mse"], row0["train_bce"],
-            color=config_color(row0),
-            s=70, zorder=3, label=label,
-            marker="o" if "linear" in key else "s",
-        )
-
-    ax.set_xlabel("Final train MSE")
-    ax.set_ylabel("Final train BCE")
-    handles, labels_ = ax.get_legend_handles_labels()
-    ax.legend(handles, labels_, loc="upper center", bbox_to_anchor=(0.5, -0.15),
-              fontsize=8, ncol=2, borderaxespad=0.0)
-    fig.tight_layout()
-    p = out_dir / "final_mse_vs_bce.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
-    print(f"  saved → {p}")
-    plt.close(fig)
 
     print("\nDone. All plots saved to:", out_dir)
 

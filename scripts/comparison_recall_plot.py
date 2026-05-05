@@ -25,10 +25,11 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-# ── aesthetics ────────────────────────────────────────────────────────────────
+BG_COLOR = "#fff5ec"
+
 plt.rcParams.update({
-    "figure.facecolor":  "white",
-    "axes.facecolor":    "white",
+    "figure.facecolor":  BG_COLOR,
+    "axes.facecolor":    BG_COLOR,
     "axes.spines.top":   False,
     "axes.spines.right": False,
     "axes.grid":         True,
@@ -61,8 +62,6 @@ LINESTYLE = {
 
 _COLOR_MAP: dict = {}
 
-
-# ── color helpers (mirrors comparison_underfitting_plot.py) ───────────────────
 
 def _hex_shade(hex_color: str, factor: float) -> str:
     import colorsys
@@ -107,8 +106,6 @@ def group_label(row: pd.Series) -> str:
     return f"nonlinear [{row['activation']}]  lr={row['lr']}"
 
 
-# ── data loading ──────────────────────────────────────────────────────────────
-
 def load(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     if "test_per" in df.columns:
@@ -134,9 +131,6 @@ def average_over_seeds(df: pd.DataFrame) -> pd.DataFrame:
 def configs(df: pd.DataFrame) -> list[pd.DataFrame]:
     group_cols = ["model", "activation", "lr"]
     return [grp.sort_values("epoch") for _, grp in df.groupby(group_cols, sort=False)]
-
-
-# ── plot helpers ──────────────────────────────────────────────────────────────
 
 def plot_recall_curves(
     ax: plt.Axes,
@@ -184,7 +178,6 @@ def final_recall_bars(
     all_configs: list[pd.DataFrame],
     show_std: bool = True,
 ):
-    """Bar chart of final-epoch recall per config."""
     col     = "train_recall"
     std_col = "train_recall_std"
     labels, values, errors, colors = [], [], [], []
@@ -234,8 +227,6 @@ def final_recall_bars(
         )
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(
         description="Plot recall learning curves from comparison_underfitting.py output."
@@ -252,6 +243,11 @@ def main():
         help="Recall improvement threshold below which a config is considered plateaued (default: 0.005)"
     )
     parser.add_argument("--out", default="results/plots", help="Output directory")
+    parser.add_argument(
+        "--lr", type=float, default=None, nargs="+",
+        help="One or more learning-rate values to keep (e.g. --lr 0.01 0.001). "
+             "Values absent from the data are silently skipped.",
+    )
     args = parser.parse_args()
 
     if not args.linear and not args.nonlinear:
@@ -280,13 +276,25 @@ def main():
         frames.append(df_nln)
 
     combined = pd.concat(frames, ignore_index=True)
+
+    # ── optional LR filter ──────────────────────────────────────────────────
+    if args.lr is not None:
+        requested = set(args.lr)
+        available = set(combined["lr"].unique())
+        matched   = requested & available
+        missing   = requested - available
+        if missing:
+            print(f"  [--lr] warning: LR values not found in data and skipped: {sorted(missing)}")
+        if not matched:
+            parser.error("None of the requested --lr values exist in the data.")
+        combined = combined[combined["lr"].isin(matched)]
+        print(f"  [--lr] keeping: {sorted(matched)}")
     averaged = average_over_seeds(combined)
     all_cfgs = configs(averaged)
 
     print(f"\nPlotting recall for {len(all_cfgs)} configurations.")
     build_color_map(all_cfgs)
 
-    # ── Figure 1: recall curves + final bar ──────────────────────────────────
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=False)
     fig.suptitle(
         "Recall clase fraude — lineal vs no lineal",
@@ -298,7 +306,7 @@ def main():
 
     fig.tight_layout()
     p = out_dir / "recall_curves.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_COLOR)
     print(f"  saved → {p}")
     plt.close(fig)
 
