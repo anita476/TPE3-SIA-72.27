@@ -259,10 +259,10 @@ def plot_q2a_metricas(split: pd.DataFrame, test_per: float) -> None:
     baseline_acc = 1.0 - fraud_rate
 
     metrics = [
-        ("test_acc",       "Accuracy"),
-        ("best_precision", "Precisión (opt.)"),
-        ("best_recall",    "Recall (opt.)"),
-        ("best_f1",        "F1 (opt.)"),
+        ("test_acc",           "Accuracy"),
+        ("best_precision_f2",  "Precisión (F2-ópt.)"),
+        ("best_recall_f2",     "Recall (F2-ópt.)"),
+        ("best_f2",            "F2 (opt.)"),
     ]
     activations = _present_binary_activations(sub)
     if not activations:
